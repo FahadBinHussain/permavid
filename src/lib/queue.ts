@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 // --- Configuration ---
 const dbPath = path.resolve(process.cwd(), 'permavid_local.sqlite'); // DB file location
 const downloadDir = path.resolve(process.cwd(), 'downloads'); // Local download dir
+const DELETE_AFTER_UPLOAD = true; // <-- Simple flag to control deletion
 
 // Track active download processes by item ID
 const activeDownloads = new Map<string, ChildProcess>();
@@ -78,6 +79,10 @@ const stmtMarkDownloading = db.prepare(
 // More specific update for starting upload (can reuse stmtMarkDownloading logic, or make specific)
 const stmtMarkUploading = db.prepare(
     'UPDATE queue SET status = ?, message = ?, updated_at = ? WHERE id = ?' // Similar to downloading
+);
+// Add statement to update progress during upload
+const stmtUpdateUploadProgress = db.prepare(
+    'UPDATE queue SET message = ?, updated_at = ? WHERE id = ?'
 );
 // Update after successful upload
 const stmtUpdateAfterUpload = db.prepare(
@@ -515,12 +520,34 @@ export async function uploadToFilemoon(itemId: string): Promise<{ success: boole
         // IMPORTANT: Use fs.createReadStream for large files
         formData.append('file', fs.createReadStream(filePath), path.basename(filePath)); // Send filename
 
+        let lastProgressUpdate = 0; // Track timestamp of last DB update
+        const updateInterval = 1000; // Update DB at most every 1 second
+
         // 5. Upload File
         console.log(`Item ${itemId}: Uploading file ${filePath} to ${uploadUrl}...`);
         const uploadResponse = await axios.post(uploadUrl, formData, {
             headers: formData.getHeaders(), // Pass necessary headers
             maxContentLength: Infinity, // Allow large file uploads
             maxBodyLength: Infinity,
+            // Add progress handler
+            onUploadProgress: (progressEvent) => {
+                if (progressEvent.total) {
+                    const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+                    const now = Date.now();
+                    // Throttle DB updates
+                    if (now - lastProgressUpdate > updateInterval || percentCompleted === 100) {
+                        const progressMessage = `Uploading: ${percentCompleted}%`;
+                        try {
+                            stmtUpdateUploadProgress.run(progressMessage, now, item.id);
+                            lastProgressUpdate = now;
+                            // Optional: Log progress update to console
+                            // console.log(`Item ${itemId}: ${progressMessage}`);
+                        } catch (dbError) {
+                            console.error(`Item ${itemId}: Failed to update upload progress in DB:`, dbError);
+                        }
+                    }
+                }
+            }
         });
 
         console.log(`Item ${itemId}: Upload response status: ${uploadResponse.status}`);
@@ -542,12 +569,31 @@ export async function uploadToFilemoon(itemId: string): Promise<{ success: boole
         // 6. Update DB to 'uploaded'
         stmtUpdateAfterUpload.run('uploaded', filecode, `Upload successful. Filecode: ${filecode}`, Date.now(), item.id);
 
-        // 7. Optional: Delete local file if configured (implement later)
-        // if (config.deleteAfterUpload) {
-        //     await fsPromises.unlink(filePath);
-        //     if (item.info_json_path) await fsPromises.unlink(item.info_json_path);
-        //     console.log(`Item ${itemId}: Deleted local files.`);
-        // }
+        // 7. Optional: Delete local file if configured
+        if (DELETE_AFTER_UPLOAD) {
+            console.log(`Item ${itemId}: Deleting local files after successful upload...`);
+            try {
+                await fsPromises.unlink(filePath);
+                console.log(`  - Deleted video: ${filePath}`);
+                if (item.info_json_path) {
+                    // Check if info.json still exists before trying to delete
+                    try {
+                       await fsPromises.access(item.info_json_path);
+                       await fsPromises.unlink(item.info_json_path);
+                       console.log(`  - Deleted metadata: ${item.info_json_path}`);
+                    } catch (infoAccessError: any) {
+                        if (infoAccessError.code !== 'ENOENT') {
+                           console.warn(`  - Could not delete metadata file ${item.info_json_path} (may already be gone or permissions issue):`, infoAccessError.message);
+                        } else {
+                           console.log(`  - Metadata file ${item.info_json_path} already gone.`);
+                        }
+                    }
+                }
+            } catch (deleteError: any) {
+                console.error(`  - Failed to delete local file(s) for item ${itemId} after upload:`, deleteError.message);
+                // Don't fail the overall upload function, just log the error
+            }
+        }
 
         return { success: true, message: `Upload successful! Filecode: ${filecode}`, filecode: filecode };
 

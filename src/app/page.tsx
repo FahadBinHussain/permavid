@@ -270,7 +270,7 @@ export default function Home() {
                       </p>
                     </div>
                      {/* Action Button Section (Upload Button) - Keep fixed size */}
-                     <div className="mt-2 sm:mt-0 flex-shrink-0"> {/* Ensure this part doesn't shrink */}
+                     <div className="mt-2 sm:mt-0 flex-shrink-0 flex items-center"> {/* Use flex items-center here */} 
                          {item.status === 'completed' && (
                            <button 
                               onClick={() => handleUpload(item.id)}
@@ -290,6 +290,21 @@ export default function Home() {
                            >
                              {cancellingItemId === item.id ? 'Cancelling...' : 'Cancel'}
                            </button>
+                         )}
+                         {/* Display Upload Progress if available */} 
+                         {item.status === 'uploading' && item.message?.startsWith('Uploading:') && (
+                           <span className="ml-2 text-xs text-blue-600">{item.message}</span>
+                         )}
+                         {/* Display Filemoon Link if uploaded */}
+                         {item.status === 'uploaded' && item.filemoon_url && (
+                           <a 
+                             href={`https://filemoon.to/d/${item.filemoon_url}`}
+                             target="_blank" 
+                             rel="noopener noreferrer"
+                             className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700"
+                           >
+                             View Link
+                           </a>
                          )}
                      </div>
                   </div>

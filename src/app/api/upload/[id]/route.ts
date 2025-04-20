@@ -25,7 +25,7 @@ export async function POST(
     const result = await uploadToFilemoon(itemId);
 
     if (result.success) {
-      console.log(`Successfully initiated/completed upload for item ${itemId}: ${result.message}`);
+      // console.log(`Successfully initiated/completed upload for item ${itemId}: ${result.message}`); // Logged in lib/queue.ts
       return NextResponse.json({ message: result.message, filecode: result.filecode });
     } else {
       console.error(`Upload failed for item ${itemId}: ${result.message}`);

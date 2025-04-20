@@ -1,0 +1,61 @@
+{
+  "name": "permavid",
+  "version": "0.1.0",
+  "private": true,
+  "main": "electron/dist/main.js",
+  "homepage": ".",
+  "scripts": {
+    "dev:next": "next dev --turbopack",
+    "dev": "concurrently \"npm:dev:next\" \"npm:dev:electron\"",
+    "dev:electron": "wait-on http://localhost:3000 && tsc electron/main.ts electron/preload.ts --outDir electron/dist --module commonjs --target es2018 --esModuleInterop && electron .",
+    "build:next": "next build",
+    "build:electron": "tsc electron/main.ts electron/preload.ts --outDir electron/dist --module commonjs --target es2018 --esModuleInterop",
+    "build": "npm run build:next && npm run build:electron",
+    "start": "next start",
+    "lint": "next lint",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "@next/font": "^14.2.5",
+    "axios": "^1.8.4",
+    "better-sqlite3": "^10.1.0",
+    "form-data": "^4.0.2",
+    "next": "15.3.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "concurrently": "^8.2.2",
+    "electron": "^31.2.1",
+    "electron-builder": "^24.13.3",
+    "eslint": "^9",
+    "eslint-config-next": "15.3.1",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^4.0.4",
+    "typescript": "^5",
+    "wait-on": "^7.2.0"
+  },
+  "description": "PermaVid: Local Video Archiving Tool",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FahadBinHussain/PermaVid.git"
+  },
+  "keywords": [
+    "archive",
+    "video",
+    "download",
+    "electron",
+    "nextjs"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/FahadBinHussain/PermaVid/issues"
+  }
+}

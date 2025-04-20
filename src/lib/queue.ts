@@ -6,12 +6,16 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import axios from 'axios'; // <-- Add axios
 import FormData from 'form-data'; // <-- Add form-data
+import { ChildProcess } from 'child_process'; // <-- Add import for ChildProcess
 
 const execFileAsync = promisify(execFile);
 
 // --- Configuration ---
 const dbPath = path.resolve(process.cwd(), 'permavid_local.sqlite'); // DB file location
 const downloadDir = path.resolve(process.cwd(), 'downloads'); // Local download dir
+
+// Track active download processes by item ID
+const activeDownloads = new Map<string, ChildProcess>();
 
 // --- Database Setup ---
 let db: Database.Database;
@@ -184,28 +188,74 @@ async function processQueue() {
     stmtMarkDownloading.run('downloading', 'Download starting...', startTime, itemToProcess.id);
     console.log(`Processing item from DB: ${itemToProcess.id} - ${itemToProcess.url}`);
 
-    const result = await downloadVideo(itemToProcess);
+    // Start the download
+    const downloadPromise = downloadVideo(itemToProcess);
 
-    // Update based on result
-    stmtUpdateStatus.run(
-        result.success ? 'completed' : 'failed',
-        result.message ?? null,
-        result.title ?? itemToProcess.title ?? null, // Keep old title if new one is null
-        result.local_path ?? null,
-        result.info_json_path ?? null,
-        Date.now(), // updated_at
-        itemToProcess.id
-    );
-    console.log(`Queue item ${itemToProcess.id} update COMPLETE: Status=${result.success ? 'completed' : 'failed'}`);
+    // Set up a cancellation check interval that runs every 2 seconds during download
+    const cancellationCheckIntervalId = setInterval(() => {
+      try {
+        // Check if the item's status has changed to 'cancelled' during download
+        const currentItem = stmtGetItemById.get(itemToProcess!.id) as QueueItem | undefined;
+        
+        if (currentItem && currentItem.status === 'cancelled') {
+          console.log(`Item ${itemToProcess!.id} was cancelled during download. Terminating processes.`);
+          
+          // Kill all yt-dlp processes to be safe
+          try {
+            const { execSync } = require('child_process');
+            execSync('taskkill /IM yt-dlp.exe /F /T', { encoding: 'utf8', stdio: 'pipe' });
+            console.log('Terminated yt-dlp processes during cancellation check');
+          } catch (killError) {
+            // It's okay if this fails
+          }
+          
+          // Clear the interval since we've detected cancellation
+          clearInterval(cancellationCheckIntervalId);
+        }
+      } catch (checkError) {
+        console.error(`Error checking cancellation status for ${itemToProcess!.id}:`, checkError);
+      }
+    }, 2000); // Check every 2 seconds
+
+    // Wait for download to complete
+    const result = await downloadPromise;
+    
+    // Clear the cancellation check interval
+    clearInterval(cancellationCheckIntervalId);
+    
+    // Check the item's current status to make sure it hasn't been cancelled during download
+    const currentStatus = (stmtGetItemById.get(itemToProcess.id) as QueueItem | undefined)?.status;
+    
+    // Only update if the item isn't cancelled
+    if (currentStatus !== 'cancelled') {
+      // Update based on result
+      stmtUpdateStatus.run(
+          result.success ? 'completed' : 'failed',
+          result.message ?? null,
+          result.title ?? itemToProcess.title ?? null, // Keep old title if new one is null
+          result.local_path ?? null,
+          result.info_json_path ?? null,
+          Date.now(), // updated_at
+          itemToProcess.id
+      );
+      console.log(`Queue item ${itemToProcess.id} update COMPLETE: Status=${result.success ? 'completed' : 'failed'}`);
+    } else {
+      console.log(`Queue item ${itemToProcess.id} was cancelled, not updating to completed status`);
+    }
 
   } catch (processingError: any) {
      // Catch errors during the update/processing itself
      console.error(`CRITICAL: Error processing queue item ${itemToProcess.id}:`, processingError);
-     // Mark as failed in DB
-     try {
-         stmtUpdateStatus.run('failed', `Processing error: ${processingError.message}`, itemToProcess.title, null, null, Date.now(), itemToProcess.id);
-     } catch (dbUpdateError) {
-         console.error(`Failed to mark item ${itemToProcess.id} as failed after processing error:`, dbUpdateError);
+
+     // Check if the item has been cancelled before marking as failed
+     const currentStatus = (stmtGetItemById.get(itemToProcess.id) as QueueItem | undefined)?.status;
+     if (currentStatus !== 'cancelled') {
+       // Mark as failed in DB only if it wasn't cancelled
+       try {
+           stmtUpdateStatus.run('failed', `Processing error: ${processingError.message}`, itemToProcess.title, null, null, Date.now(), itemToProcess.id);
+       } catch (dbUpdateError) {
+           console.error(`Failed to mark item ${itemToProcess.id} as failed after processing error:`, dbUpdateError);
+       }
      }
   } finally {
       isProcessing = false;
@@ -265,6 +315,7 @@ async function downloadVideo(item: QueueItem): Promise<DownloadResult> {
     let infoJsonPath = '';
     let localVideoPath = '';
     let finalOutputTemplate = ''; // Define it here
+    let childProcess: ChildProcess | null = null;
 
     try {
         await ensureDirExists(downloadDir);
@@ -305,60 +356,94 @@ async function downloadVideo(item: QueueItem): Promise<DownloadResult> {
         ];
 
         console.log(`Executing download: yt-dlp.exe ${args.join(' ')}`);
-        // Add encoding option for better output handling on Windows
-        const { stdout, stderr } = await execFileAsync('yt-dlp.exe', args, { timeout: 1800000, encoding: 'utf-8' });
+        
+        // Use execFile directly instead of the promisified version so we can get the child process
+        return new Promise((resolve, reject) => {
+            childProcess = execFile('yt-dlp.exe', args, { timeout: 1800000, encoding: 'utf-8' }, 
+                (error, stdout, stderr) => {
+                // Remove this process from activeDownloads when it completes
+                activeDownloads.delete(item.id);
+                
+                if (error) {
+                    // Check if this was a cancellation
+                    if (error.killed) {
+                        console.log(`Download process for ${item.id} was cancelled.`);
+                        return resolve({
+                            success: false,
+                            message: 'Download cancelled by user.',
+                            title: videoTitle
+                        });
+                    }
+                    
+                    console.error(`yt-dlp error for ${item.id}:`, error);
+                    return reject(error);
+                }
+                
+                if (stderr) {
+                    console.error('yt-dlp stderr:', stderr);
+                    if (stderr.includes('ERROR:')) {
+                        const errorMatch = stderr.match(/ERROR:(.*)/);
+                        return reject(new Error(`yt-dlp error: ${errorMatch ? errorMatch[1].trim() : stderr}`));
+                    }
+                    // Consider other stderr content as warnings/info
+                }
+                
+                console.log('yt-dlp stdout:', stdout);
+                
+                // After successful download, verify files
+                (async () => {
+                    try {
+                        // Check if the predicted info.json exists
+                        try {
+                            await fsPromises.access(infoJsonPath);
+                            console.log(`Found info.json: ${infoJsonPath}`);
+                        } catch (e) {
+                            console.warn(`Could not find expected info.json file: ${infoJsonPath}`);
+                            infoJsonPath = ''; // Reset path if not found
+                        }
 
-        if (stderr) {
-            console.error('yt-dlp stderr:', stderr);
-            if (stderr.includes('ERROR:')) {
-                const errorMatch = stderr.match(/ERROR:(.*)/);
-                throw new Error(`yt-dlp error: ${errorMatch ? errorMatch[1].trim() : stderr}`);
-            }
-            // Consider other stderr content as warnings/info
-        }
-        console.log('yt-dlp stdout:', stdout);
+                        // Find the actual video file matching the pattern
+                        const files = await fsPromises.readdir(downloadDir);
+                        const videoFile = files.find(f => f.startsWith(safeTitle) && f !== `${safeTitle}.info.json`);
 
-        // --- Verify downloaded files ---
-        // Check if the predicted info.json exists
-        try {
-            await fsPromises.access(infoJsonPath);
-            console.log(`Found info.json: ${infoJsonPath}`);
-        } catch (e) {
-             console.warn(`Could not find expected info.json file: ${infoJsonPath}`);
-             infoJsonPath = ''; // Reset path if not found
-        }
-
-        // Find the actual video file matching the pattern
-        const files = await fsPromises.readdir(downloadDir);
-        const videoFile = files.find(f => f.startsWith(safeTitle) && f !== `${safeTitle}.info.json`);
-
-        if (!videoFile && !infoJsonPath) {
-            // Neither video nor info file found
-            throw new Error('Download finished according to yt-dlp, but no video or info.json file found.');
-        } else if (!videoFile && infoJsonPath) {
-            // Only info file found
-             console.warn(`Video file starting with '${safeTitle}' not found, but info.json exists.`);
-             return {
-                success: true, // Consider metadata download a partial success
-                message: 'Metadata downloaded, video file missing/failed.',
-                title: videoTitle,
-                local_path: undefined,
-                info_json_path: infoJsonPath
-            };
-        } else if (videoFile) {
-             localVideoPath = path.join(downloadDir, videoFile);
-             console.log(`Found video file: ${localVideoPath}`);
-        }
-       
-        return {
-            success: true,
-            message: `Download complete: ${videoFile ?? 'Metadata only'}`,
-            title: videoTitle,
-            local_path: localVideoPath || undefined, // Return path or undefined
-            info_json_path: infoJsonPath || undefined
-        };
+                        if (!videoFile && !infoJsonPath) {
+                            // Neither video nor info file found
+                            return reject(new Error('Download finished according to yt-dlp, but no video or info.json file found.'));
+                        } else if (!videoFile && infoJsonPath) {
+                            // Only info file found
+                            console.warn(`Video file starting with '${safeTitle}' not found, but info.json exists.`);
+                            return resolve({
+                                success: true, // Consider metadata download a partial success
+                                message: 'Metadata downloaded, video file missing/failed.',
+                                title: videoTitle,
+                                local_path: undefined,
+                                info_json_path: infoJsonPath
+                            });
+                        } else if (videoFile) {
+                            localVideoPath = path.join(downloadDir, videoFile);
+                            console.log(`Found video file: ${localVideoPath}`);
+                            return resolve({
+                                success: true,
+                                message: `Download complete: ${videoFile ?? 'Metadata only'}`,
+                                title: videoTitle,
+                                local_path: localVideoPath || undefined, // Return path or undefined
+                                info_json_path: infoJsonPath || undefined
+                            });
+                        }
+                    } catch (verifyError) {
+                        reject(verifyError);
+                    }
+                })();
+            });
+            
+            // Store the child process for potential cancellation
+            activeDownloads.set(item.id, childProcess);
+        });
 
     } catch (downloadError: any) {
+        // Always make sure to remove from active downloads when erroring
+        activeDownloads.delete(item.id);
+        
         console.error(`Failed yt-dlp execution for ${item.url}:`, downloadError);
         let errorMessage = downloadError.stderr || downloadError.stdout || downloadError.message || 'Unknown download error';
         if (downloadError.code === 'ENOENT') {
@@ -564,27 +649,67 @@ export function cancelItem(itemId: string): { success: boolean; message: string 
       return { success: false, message: `Database error cancelling item: ${deleteError.message}` };
     }
   } else if (currentStatus === 'downloading') {
+    // Try all available process termination methods
+    
+    // First, try to kill by specific process
+    const process = activeDownloads.get(itemId);
+    if (process) {
+      try {
+        process.kill('SIGKILL');
+        console.log(`Sent SIGKILL to process for item ${itemId}`);
+      } catch (error) {
+        console.error(`Failed to kill process for ${itemId} with SIGKILL:`, error);
+      }
+      activeDownloads.delete(itemId);
+    }
+    
+    // Second, attempt to forcefully kill all yt-dlp processes on Windows
     try {
-      // Mark as failed with a specific message
+      const { execSync } = require('child_process');
+      
+      // First find all yt-dlp processes
+      console.log('Attempting to terminate all yt-dlp.exe processes...');
+      
+      // Kill all yt-dlp.exe processes forcefully
+      execSync('taskkill /IM yt-dlp.exe /F /T', { encoding: 'utf8', stdio: 'pipe' });
+      console.log('Successfully terminated all yt-dlp.exe processes');
+      
+      // Also kill any ffmpeg processes that might have been spawned
+      try {
+        execSync('taskkill /IM ffmpeg.exe /F /T', { encoding: 'utf8', stdio: 'pipe' });
+        console.log('Successfully terminated all ffmpeg.exe processes');
+      } catch (ffmpegError) {
+        // It's okay if this fails - there might not be any ffmpeg processes
+        console.log('No ffmpeg processes found to terminate');
+      }
+    } catch (taskkillError: any) {
+      // If taskkill fails because no processes were found, that's okay
+      console.log('Could not find yt-dlp processes to terminate:', taskkillError.message);
+    }
+    
+    // Regardless of process termination success, update the database
+    try {
+      // Mark as CANCELLED
       const result = stmtUpdateStatus.run(
-        'failed',
+        'cancelled',
         'Cancelled by user during download.',
-        item.title, // Keep existing title
-        item.local_path, // Keep existing path (if any)
-        item.info_json_path, // Keep existing info path (if any)
+        item.title,
+        item.local_path,
+        item.info_json_path,
         Date.now(),
         itemId
       );
-       if (result.changes > 0) {
-          console.log(`Cancelled (marked as cancelled) downloading item ${itemId}.`);
-          return { success: true, message: 'Downloading item cancelled.' };
-       } else {
-          console.warn(`Tried to cancel (mark cancelled) downloading item ${itemId}, but it wasn't found or status changed.`);
-          return { success: false, message: 'Item not found or status changed.' };
-       }
+      
+      if (result.changes > 0) {
+        console.log(`Cancelled (marked as cancelled) downloading item ${itemId}.`);
+        return { success: true, message: 'Downloading item cancelled.' };
+      } else {
+        console.warn(`Tried to cancel (mark cancelled) downloading item ${itemId}, but it wasn't found or status changed.`);
+        return { success: false, message: 'Item not found or status changed.' };
+      }
     } catch (updateError: any) {
-       console.error(`Cancel Failed: Error marking downloading item ${itemId} as failed:`, updateError);
-       return { success: false, message: `Database error cancelling item: ${updateError.message}` };
+      console.error(`Cancel Failed: Error marking downloading item ${itemId} as cancelled:`, updateError);
+      return { success: false, message: `Database error cancelling item: ${updateError.message}` };
     }
   } else {
     // Cannot cancel items in other states (completed, failed, uploading, uploaded)

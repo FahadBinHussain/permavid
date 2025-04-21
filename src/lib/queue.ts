@@ -1,4 +1,5 @@
-import Database from 'better-sqlite3';
+import { db } from './db'; // <-- Import db from the new module
+// import Database from 'better-sqlite3'; // <-- Remove old import
 import path from 'path';
 import fsPromises from 'fs/promises'; // Rename promise version
 import fs from 'fs'; // Import standard fs for sync operations
@@ -7,56 +8,80 @@ import { promisify } from 'util';
 import axios from 'axios'; // <-- Add axios
 import FormData from 'form-data'; // <-- Add form-data
 import { ChildProcess } from 'child_process'; // <-- Add import for ChildProcess
+import { getSetting } from './settings'; // <-- Import getSetting
 
 const execFileAsync = promisify(execFile);
 
-// --- Configuration ---
-const dbPath = path.resolve(process.cwd(), 'permavid_local.sqlite'); // DB file location
-const downloadDir = path.resolve(process.cwd(), 'downloads'); // Local download dir
-const DELETE_AFTER_UPLOAD = true; // <-- Simple flag to control deletion
+// --- Configuration (Read from settings where applicable) ---
+// const downloadDir = path.resolve(process.cwd(), 'downloads'); // <-- Now read from settings
+// const DELETE_AFTER_UPLOAD = true; // <-- Now read from settings
+
+// Function to get the current download directory from settings
+function getCurrentDownloadDir(): string {
+    // Use the setting, but fallback to a default if it's somehow unset or invalid
+    const dirFromSettings = getSetting('download_directory');
+    if (dirFromSettings && path.isAbsolute(dirFromSettings)) {
+        return dirFromSettings;
+    }
+    console.warn('Download directory setting is missing or invalid, using default.');
+    return path.resolve(process.cwd(), 'downloads'); // Fallback default
+}
+
+// Function to check if deletion is enabled
+function shouldDeleteAfterUpload(): boolean {
+    return getSetting('delete_after_upload', 'false') === 'true';
+}
 
 // Track active download processes by item ID
 const activeDownloads = new Map<string, ChildProcess>();
 
 // --- Database Setup ---
-let db: Database.Database;
+// let db: Database.Database; // <-- Remove old declaration
+// --- Remove the entire try/catch block for DB initialization ---
+
+// --- Initialize Queue Table and Perform Migrations (Using imported db) ---
 try {
-  // Ensure the directory for the database exists (though CWD should always exist)
-  // Use synchronous fs operations here as it's part of critical startup
-  try { fs.mkdirSync(path.dirname(dbPath), { recursive: true }); } catch (e) { /* ignore */ }
-
-  db = new Database(dbPath, { /* verbose: console.log */ }); // Add verbose for debugging if needed
-
-  // Enable WAL mode for better concurrency (though less critical in this local app)
-  db.pragma('journal_mode = WAL');
-
   // Create the queue table if it doesn't exist
   db.exec(`
     CREATE TABLE IF NOT EXISTS queue (
       id TEXT PRIMARY KEY,
-      url TEXT NOT NULL UNIQUE, -- Prevent adding the exact same URL twice
-      status TEXT NOT NULL DEFAULT 'queued', -- queued, downloading, completed, failed, uploading, uploaded
+      url TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'queued', 
       title TEXT,
-      message TEXT, -- Error messages or progress info
-      local_path TEXT, -- Path to the downloaded video file
-      info_json_path TEXT, -- Path to the .info.json file
-      filemoon_url TEXT, -- URL after uploading to Filemoon (optional)
+      message TEXT, 
+      local_path TEXT, 
+      info_json_path TEXT, 
+      filemoon_url TEXT, 
+      encoding_progress INTEGER, 
       added_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
   `);
 
-  console.log(`SQLite database initialized at: ${dbPath}`);
+  // --- Schema Migration: Add encoding_progress if it doesn't exist ---
+  try {
+    const columns = db.pragma("table_info(queue)") as { name: string }[];
+    const hasEncodingProgress = columns.some(col => col.name === 'encoding_progress');
 
-} catch (dbError) {
-  console.error("------------------------------------------");
-  console.error("FATAL: Could not initialize SQLite database!");
-  console.error(dbError);
-  console.error(`Database path: ${dbPath}`);
-  console.error("Ensure the application has write permissions to this location.");
-  console.error("------------------------------------------");
-  // If the DB fails, throw an error to prevent the app from starting incorrectly
-  throw new Error(`Failed to initialize database: ${dbError}`);
+    if (!hasEncodingProgress) {
+      console.log('Migrating database schema: Adding encoding_progress column to queue table...');
+      db.exec('ALTER TABLE queue ADD COLUMN encoding_progress INTEGER');
+      console.log('Database schema migration successful.');
+    }
+  } catch (migrationError: any) {
+    console.error('FATAL: Queue table schema migration failed!', migrationError);
+    throw new Error(`Failed to migrate queue table schema: ${migrationError.message}`);
+  }
+  // ------------------------------------------------------------------
+  console.log('Queue table initialized/verified successfully.');
+
+} catch (tableInitError) {
+    console.error("------------------------------------------");
+    console.error("FATAL: Could not initialize queue table!");
+    console.error(tableInitError);
+    console.error("------------------------------------------");
+    // If the table fails, throw an error 
+    throw new Error(`Failed to initialize queue table: ${tableInitError}`);
 }
 
 // --- Prepare Statements ---
@@ -89,7 +114,7 @@ const stmtUpdateAfterUpload = db.prepare(
     'UPDATE queue SET status = ?, filemoon_url = ?, message = ?, updated_at = ? WHERE id = ?' // Store filecode in filemoon_url for now
 );
 const stmtClearCompleted = db.prepare("DELETE FROM queue WHERE status = 'completed'");
-const stmtClearFailed = db.prepare("DELETE FROM queue WHERE status = 'failed'");
+const stmtClearFailed = db.prepare("DELETE FROM queue WHERE status = 'failed' OR status = 'uploading'");
 const stmtClearFinished = db.prepare("DELETE FROM queue WHERE status = 'completed' OR status = 'failed'");
 // Add statement to get a specific item by ID
 const stmtGetItemById = db.prepare('SELECT * FROM queue WHERE id = ?');
@@ -97,17 +122,27 @@ const stmtGetItemById = db.prepare('SELECT * FROM queue WHERE id = ?');
 const stmtDeleteItemById = db.prepare('DELETE FROM queue WHERE id = ?');
 // Add statement to clear cancelled items
 const stmtClearCancelled = db.prepare("DELETE FROM queue WHERE status = 'cancelled'");
+// Add statement to get items that have been uploaded but not yet encoded or failed during encoding
+// Fetch current status and progress too, to avoid unnecessary updates
+const stmtGetUploadedItemsToCheck = db.prepare("SELECT id, filemoon_url, status, encoding_progress FROM queue WHERE status = 'uploaded' OR status = 'encoding'");
+// Add statement to update encoding progress and status
+const stmtUpdateEncodingStatus = db.prepare(
+    'UPDATE queue SET status = ?, encoding_progress = ?, message = ?, updated_at = ? WHERE id = ?'
+);
+// Add statement to fetch item by filecode (stored in filemoon_url)
+const stmtGetItemByFilecode = db.prepare('SELECT * FROM queue WHERE filemoon_url = ?');
 
 // --- Queue Item Type (Matches DB) ---
 export interface QueueItem {
     id: string;
     url: string;
-    status: 'queued' | 'downloading' | 'completed' | 'failed' | 'uploading' | 'uploaded' | 'cancelled';
+    status: 'queued' | 'downloading' | 'completed' | 'failed' | 'uploading' | 'uploaded' | 'cancelled' | 'encoding' | 'encoded';
     title?: string | null;
     message?: string | null;
     local_path?: string | null;
     info_json_path?: string | null;
-    filemoon_url?: string | null; // Will store the filecode after upload
+    filemoon_url?: string | null; // Stores the filecode
+    encoding_progress?: number | null; // <-- Add encoding progress field
     added_at: number;
     updated_at: number;
 }
@@ -188,13 +223,14 @@ async function processQueue() {
 
   isProcessing = true;
   const startTime = Date.now();
+  const downloadDir = getCurrentDownloadDir(); // <-- Get current dir for this process
   try {
     // Mark as downloading
     stmtMarkDownloading.run('downloading', 'Download starting...', startTime, itemToProcess.id);
-    console.log(`Processing item from DB: ${itemToProcess.id} - ${itemToProcess.url}`);
+    console.log(`Processing item from DB: ${itemToProcess.id} - ${itemToProcess.url} into ${downloadDir}`);
 
-    // Start the download
-    const downloadPromise = downloadVideo(itemToProcess);
+    // Start the download (pass the specific downloadDir)
+    const downloadPromise = downloadVideo(itemToProcess, downloadDir);
 
     // Set up a cancellation check interval that runs every 2 seconds during download
     const cancellationCheckIntervalId = setInterval(() => {
@@ -315,7 +351,7 @@ function sanitizeFilename(name: string): string {
                .substring(0, 200); // Limit length
 }
 
-async function downloadVideo(item: QueueItem): Promise<DownloadResult> {
+async function downloadVideo(item: QueueItem, downloadDir: string): Promise<DownloadResult> {
     let videoTitle = item.title || 'unknown_title';
     let infoJsonPath = '';
     let localVideoPath = '';
@@ -461,13 +497,13 @@ async function downloadVideo(item: QueueItem): Promise<DownloadResult> {
     }
 }
 
-// --- Filemoon Upload Logic (Direct Upload Implementation) ---
+// --- Filemoon Upload Logic (Use settings) ---
 
 export async function uploadToFilemoon(itemId: string): Promise<{ success: boolean, message: string, filecode?: string }> {
-    const apiKey = process.env.FILEMOON_API_KEY;
+    const apiKey = getSetting('filemoon_api_key'); // <-- Read API key from settings
     if (!apiKey) {
-        console.error('Filemoon API key not found in environment variables (FILEMOON_API_KEY).');
-        return { success: false, message: 'Upload failed: Filemoon API key is missing.' };
+        console.error('Filemoon API key not found in settings.');
+        return { success: false, message: 'Upload failed: Filemoon API key is missing in settings.' };
     }
 
     let item: QueueItem | undefined;
@@ -520,58 +556,79 @@ export async function uploadToFilemoon(itemId: string): Promise<{ success: boole
         // IMPORTANT: Use fs.createReadStream for large files
         formData.append('file', fs.createReadStream(filePath), path.basename(filePath)); // Send filename
 
-        let lastProgressUpdate = 0; // Track timestamp of last DB update
-        const updateInterval = 1000; // Update DB at most every 1 second
+        // --- Get file size for accurate progress --- 
+        const stats = await fsPromises.stat(filePath);
+        const fileSize = stats.size;
+        // The form-data library can calculate the total length synchronously -- REMOVE THIS
+        // const contentLength = formData.getLengthSync(); 
 
         // 5. Upload File
-        console.log(`Item ${itemId}: Uploading file ${filePath} to ${uploadUrl}...`);
+        console.log(`Item ${itemId}: Uploading file ${filePath} (${fileSize} bytes) to ${uploadUrl}...`);
         const uploadResponse = await axios.post(uploadUrl, formData, {
-            headers: formData.getHeaders(), // Pass necessary headers
+            // Remove explicit Content-Length, let axios handle streaming
+            headers: formData.getHeaders(), // Just use headers from form-data
             maxContentLength: Infinity, // Allow large file uploads
             maxBodyLength: Infinity,
-            // Add progress handler
-            onUploadProgress: (progressEvent) => {
-                if (progressEvent.total) {
-                    const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-                    const now = Date.now();
-                    // Throttle DB updates
-                    if (now - lastProgressUpdate > updateInterval || percentCompleted === 100) {
-                        const progressMessage = `Uploading: ${percentCompleted}%`;
-                        try {
-                            stmtUpdateUploadProgress.run(progressMessage, now, item.id);
-                            lastProgressUpdate = now;
-                            // Optional: Log progress update to console
-                            // console.log(`Item ${itemId}: ${progressMessage}`);
-                        } catch (dbError) {
-                            console.error(`Item ${itemId}: Failed to update upload progress in DB:`, dbError);
-                        }
-                    }
-                }
-            }
+            // Add progress handler - REMOVE THIS
+            // onUploadProgress: (progressEvent) => {
+            //     // Use fileSize obtained via fs.stat for more reliable percentage
+            //     if (fileSize > 0) {
+            //         const percentCompleted = Math.round((progressEvent.loaded * 100) / fileSize);
+            //         const now = Date.now();
+            //         // Throttle DB updates and ensure we report 100% if loaded equals/exceeds fileSize
+            //         if (now - lastProgressUpdate > updateInterval || progressEvent.loaded >= fileSize) {
+            //             // Clamp percentage between 0 and 100
+            //             const displayPercent = Math.min(100, Math.max(0, percentCompleted)); 
+            //             const progressMessage = `Uploading: ${displayPercent}%`;
+            //             try {
+            //                 // Use stmtMarkUploading to set status and initial message if needed,
+            //                 // but use stmtUpdateUploadProgress for subsequent updates.
+            //                 // Ensure status is 'uploading' here.
+            //                 stmtUpdateUploadProgress.run(progressMessage, now, item.id);
+            //                 lastProgressUpdate = now;
+            //                 // Optional: Log progress update to console
+            //                 // console.log(`Item ${itemId}: ${progressMessage}`);
+            //             } catch (dbError) {
+            //                 console.error(`Item ${itemId}: Failed to update upload progress in DB:`, dbError);
+            //             }
+            //         }
+            //     } else {
+            //         // Handle case where file size is 0 or unknown (though fs.stat should prevent this)
+            //         if (Date.now() - lastProgressUpdate > updateInterval) { // Still throttle
+            //              stmtUpdateUploadProgress.run('Uploading: (calculating...)', Date.now(), item.id);
+            //              lastProgressUpdate = Date.now();
+            //         }
+            //     }
+            // }
         });
 
         console.log(`Item ${itemId}: Upload response status: ${uploadResponse.status}`);
-        console.log(`Item ${itemId}: Upload response data:`, uploadResponse.data);
+        console.log(`Item ${itemId}: Upload response data:`, JSON.stringify(uploadResponse.data, null, 2)); // Log the full response data clearly
 
         if (uploadResponse.data?.status !== 200 || !uploadResponse.data?.files || uploadResponse.data.files.length === 0) {
+            console.error(`Item ${itemId}: Throwing error due to invalid Filemoon response structure or status.`);
             throw new Error(`Filemoon upload failed after request. Status: ${uploadResponse.data?.status}, Msg: ${uploadResponse.data?.msg}`);
         }
 
         const uploadedFile = uploadResponse.data.files[0];
+        console.log(`Item ${itemId}: Processing uploaded file details:`, uploadedFile);
         if (uploadedFile?.status !== 'OK' || !uploadedFile?.filecode) {
+             console.error(`Item ${itemId}: Throwing error due to file status not OK or missing filecode.`);
              throw new Error(`Filemoon upload result indicates failure. File status: ${uploadedFile?.status}, Filecode: ${uploadedFile?.filecode}`);
         }
 
         const filecode = uploadedFile.filecode;
-        const filemoonUrl = `https://filemoon.to/${filecode}`; // Construct a basic URL, might need adjustment
+        const filemoonUrl = `https://filemoon.to/d/${filecode}`; // Construct a basic URL, might need adjustment
         console.log(`Item ${itemId}: Upload successful! Filecode: ${filecode}, URL: ${filemoonUrl}`);
-
+        
         // 6. Update DB to 'uploaded'
+        console.log(`Item ${itemId}: Attempting to update database status to 'uploaded'...`);
         stmtUpdateAfterUpload.run('uploaded', filecode, `Upload successful. Filecode: ${filecode}`, Date.now(), item.id);
+        console.log(`Item ${itemId}: Database status updated to 'uploaded'.`);
 
-        // 7. Optional: Delete local file if configured
-        if (DELETE_AFTER_UPLOAD) {
-            console.log(`Item ${itemId}: Deleting local files after successful upload...`);
+        // 7. Optional: Delete local file if configured in settings
+        if (shouldDeleteAfterUpload()) { // <-- Use setting function
+            console.log(`Item ${itemId}: Deleting local files after successful upload (setting is enabled)...`);
             try {
                 await fsPromises.unlink(filePath);
                 console.log(`  - Deleted video: ${filePath}`);
@@ -593,6 +650,8 @@ export async function uploadToFilemoon(itemId: string): Promise<{ success: boole
                 console.error(`  - Failed to delete local file(s) for item ${itemId} after upload:`, deleteError.message);
                 // Don't fail the overall upload function, just log the error
             }
+        } else {
+             console.log(`Item ${itemId}: Keeping local files after successful upload (setting is disabled).`);
         }
 
         return { success: true, message: `Upload successful! Filecode: ${filecode}`, filecode: filecode };
@@ -631,10 +690,10 @@ export function clearCompleted(): { success: boolean; count: number; message: st
 export function clearFailed(): { success: boolean; count: number; message: string } {
   try {
     const result = stmtClearFailed.run();
-    console.log(`Cleared ${result.changes} failed items from DB.`);
-    return { success: true, count: result.changes, message: `Cleared ${result.changes} failed items.` };
+    console.log(`Cleared ${result.changes} failed or stuck uploading items from DB.`);
+    return { success: true, count: result.changes, message: `Cleared ${result.changes} failed/uploading items.` };
   } catch (error: any) {
-    console.error('Failed to clear failed items:', error);
+    console.error('Failed to clear failed/uploading items:', error);
     return { success: false, count: 0, message: `Database error: ${error.message}` };
   }
 }
@@ -762,4 +821,254 @@ export function cancelItem(itemId: string): { success: boolean; message: string 
     console.log(`Attempted to cancel item ${itemId} in non-cancellable state: ${currentStatus}`);
     return { success: false, message: `Cannot cancel item in '${currentStatus}' state.` };
   }
-} 
+}
+
+// --- Filemoon Encoding Status Polling (Use settings) ---
+
+let isPollingEncoding = false;
+const POLLING_INTERVAL = 30 * 1000; // Check every 30 seconds
+const UPLOADED_STATE_TIMEOUT = 30 * 60 * 1000; // 10 minutes in milliseconds
+
+async function pollEncodingStatus() {
+    if (isPollingEncoding) return;
+    isPollingEncoding = true;
+
+    const apiKey = getSetting('filemoon_api_key'); // <-- Read API key from settings
+    if (!apiKey) {
+        console.error('Encoding Poll: Filemoon API key not found in settings, skipping poll.');
+        isPollingEncoding = false;
+        return;
+    }
+
+    // Keep track of filecodes reported by the API in this cycle
+    const filecodesFromApi = new Set<string>();
+    // Store local items that *should* be polled
+    let localItemsToPoll: QueueItem[] = [];
+
+    try {
+        // --- Get local items first --- 
+        try {
+            // Fetch ID, filemoon_url, status, progress for items needing check
+            localItemsToPoll = db.prepare(
+                "SELECT id, filemoon_url, status, encoding_progress, updated_at FROM queue WHERE status = 'uploaded' OR status = 'encoding'"
+            ).all() as QueueItem[];
+        } catch (dbError: any) {
+            console.error('Encoding Poll: DB error fetching local items to check:', dbError);
+            isPollingEncoding = false;
+            return; // Cannot proceed without local items
+        }
+
+        if (localItemsToPoll.length === 0) {
+            // console.log('Encoding Poll: No local items in uploaded/encoding state.');
+            isPollingEncoding = false;
+            return;
+        }
+
+        // --- Get list of ALL encoding files from Filemoon API --- 
+        const apiUrl = `https://filemoonapi.com/api/encoding/list?key=${apiKey}`;
+        console.log(`Encoding Poll: Fetching encoding list from ${apiUrl}`);
+        const response = await axios.get(apiUrl, { timeout: 15000 }); // 15s timeout for status check
+
+        if (response.data?.status !== 200 || !Array.isArray(response.data?.result)) {
+            console.warn(`Encoding Poll: Received non-200 or invalid response structure from /encoding/list. Status: ${response.data?.status}, Msg: ${response.data?.msg}`);
+            // Don't return immediately, proceed to check for potentially completed items below
+        } 
+        
+        const encodingResults = Array.isArray(response.data?.result) ? response.data.result : [];
+
+        console.log(`Encoding Poll: Received status for ${encodingResults.length} item(s) from Filemoon.`);
+
+        // --- Process each result from the API --- 
+        for (const result of encodingResults) {
+            const filecode = result.file_code;
+            if (!filecode) {
+                console.warn(`Encoding Poll: Skipping API result item with missing file_code:`, result);
+                continue; // Skip items without a filecode
+            }
+
+            // Add to set of codes reported by API
+            filecodesFromApi.add(filecode);
+
+            // Find the corresponding item in our *already fetched* local items
+            const localItem = localItemsToPoll.find(item => item.filemoon_url === filecode);
+
+            if (!localItem) {
+                // Filecode from API not found in our local items needing check (maybe status changed locally since fetch?)
+                // console.log(`Encoding Poll: Filecode ${filecode} from API not found in local items needing check.`);
+                continue; 
+            }
+
+            // Process the status from the API for this specific item
+            const encodingStatus = result.status?.toUpperCase(); // Normalize status
+            const progress = result.progress ? parseInt(result.progress, 10) : null;
+            const errorMsg = result.error ?? null;
+
+            let message = '';
+            let newDbStatus: QueueItem['status'] = localItem.status; // Default to current status
+            let encodingProgressValue = localItem.encoding_progress; // Default to current progress
+
+            if (encodingStatus === 'PENDING') { // <-- Handle PENDING explicitly
+                newDbStatus = 'encoding'; // Keep it as encoding locally
+                encodingProgressValue = progress ?? 0; // Use progress if available, else 0
+                message = 'Pending in encoding queue...';
+            } else if (encodingStatus === 'ENCODING' || encodingStatus === 'PROCESSING') {
+                newDbStatus = 'encoding';
+                encodingProgressValue = progress;
+                message = `Encoding: ${progress ?? 0}%`;
+            } else if (encodingStatus === 'COMPLETED' || encodingStatus === 'READY') {
+                 newDbStatus = 'encoded';
+                 encodingProgressValue = 100;
+                 message = 'Encoding complete.';
+                 console.log(`Encoding Poll: Item ${localItem.id} (Filecode: ${filecode}) finished encoding according to API.`);
+            } else if (encodingStatus === 'ERROR') {
+                newDbStatus = 'failed';
+                encodingProgressValue = null; // Clear progress on error
+                message = `Encoding failed: ${errorMsg ?? 'Unknown error'}`;
+                 console.error(`Encoding Poll: Item ${localItem.id} (Filecode: ${filecode}) failed encoding: ${message}`);
+            } else {
+                 // Status is undefined, null, or some other unexpected value from API
+                 console.warn(`Encoding Poll: Item ${localItem.id} (Filecode: ${filecode}) has unknown API status '${result.status}'. Keeping local status '${localItem.status}'.`);
+                 message = result.status ? `Unknown API status: ${result.status}` : 'Waiting for encoding status...'; 
+                 encodingProgressValue = progress; // Store progress if available, even with unknown status
+                 // Don't change newDbStatus from its default (current local status)
+            }
+
+            // Update the database only if status or progress actually changed
+            if (newDbStatus !== localItem.status || encodingProgressValue !== localItem.encoding_progress) {
+                console.log(`Encoding Poll: Preparing update for ${localItem.id}. Current: ${localItem.status} (${localItem.encoding_progress}%) -> New: ${newDbStatus} (${encodingProgressValue}%) API Status: ${encodingStatus}`);
+                stmtUpdateEncodingStatus.run(
+                    newDbStatus,
+                    encodingProgressValue,
+                    message,
+                    Date.now(),
+                    localItem.id // Use the local item's ID for the update
+                );
+                console.log(`Encoding Poll: Updated item ${localItem.id} to status ${newDbStatus} (${encodingProgressValue}%)`);
+            }
+        } // End of loop through API results
+
+        // --- Check for local items NOT reported by the API --- 
+        console.log('Encoding Poll: Checking for local items potentially completed or still transferring...');
+        for (const localItem of localItemsToPoll) {
+            if (localItem.filemoon_url && !filecodesFromApi.has(localItem.filemoon_url)) {
+                // This item was 'uploaded' or 'encoding' locally, but API didn't mention it.
+                
+                if (localItem.status === 'encoding') {
+                    // If it WAS encoding and now disappeared, assume it's completed.
+                    console.log(`Encoding Poll: Item ${localItem.id} (Filecode: ${localItem.filemoon_url}) was 'encoding' and not in API list. Assuming complete.`);
+                    stmtUpdateEncodingStatus.run(
+                        'encoded', // New status
+                        100,       // Progress
+                        'Encoding presumed complete (not in API list).', // Message
+                        Date.now(),
+                        localItem.id
+                    );
+                    console.log(`Encoding Poll: Updated presumed complete item ${localItem.id} to status encoded (100%)`);
+                } else if (localItem.status === 'uploaded') {
+                    // If it was 'uploaded' and not yet seen in the API list... 
+                    const timeSinceLastUpdate = Date.now() - localItem.updated_at;
+                    
+                    if (timeSinceLastUpdate > UPLOADED_STATE_TIMEOUT) {
+                        // It's been stuck in 'uploaded' for too long without appearing in the API list.
+                        // Assume it completed very quickly or failed silently.
+                        console.warn(`Encoding Poll: Item ${localItem.id} (Filecode: ${localItem.filemoon_url}) stuck in 'uploaded' for >${UPLOADED_STATE_TIMEOUT / 60000}min. Assuming complete.`);
+                        stmtUpdateEncodingStatus.run(
+                            'encoded', // New status
+                            100,       // Progress
+                            `Encoding presumed complete (timeout: >${UPLOADED_STATE_TIMEOUT / 60000}min in uploaded state).`, // Message
+                            Date.now(),
+                            localItem.id
+                        );
+                        console.log(`Encoding Poll: Updated timed-out item ${localItem.id} to status encoded (100%)`);
+                    } else {
+                         // It hasn't timed out yet, assume it's still transferring or waiting.
+                         console.log(`Encoding Poll: Item ${localItem.id} (Filecode: ${localItem.filemoon_url}) is 'uploaded' but not yet in encoding API list. Waiting (age: ${Math.round(timeSinceLastUpdate / 1000)}s)...`);
+                         // Do nothing, keep waiting.
+                    }
+                }
+            }
+        }
+
+    } catch (error: any) {
+        console.error(`Encoding Poll: Error during API call or processing:`, error.response?.data || error.message || error);
+    } finally {
+        isPollingEncoding = false;
+        // console.log("Encoding Poll: Finished list processing cycle.");
+    }
+}
+
+// Start the polling loop
+setInterval(pollEncodingStatus, POLLING_INTERVAL);
+// Run once on startup after a short delay
+setTimeout(pollEncodingStatus, 5000);
+
+// --- New Restart Encoding Function (Use settings) ---
+
+export async function restartFilemoonEncoding(itemId: string): Promise<{ success: boolean; message: string }> {
+  const apiKey = getSetting('filemoon_api_key'); // <-- Read API key from settings
+  if (!apiKey) {
+    console.error('Restart Encoding Failed: Filemoon API key not found in settings.');
+    return { success: false, message: 'Restart failed: Filemoon API key is missing in settings.' };
+  }
+
+  let item: QueueItem | undefined;
+  try {
+    item = stmtGetItemById.get(itemId) as QueueItem | undefined;
+  } catch (dbError: any) {
+    console.error(`Restart Encoding Failed: DB error retrieving item ${itemId}:`, dbError);
+    return { success: false, message: `Database error retrieving item: ${dbError.message}` };
+  }
+
+  if (!item) {
+    return { success: false, message: `Restart failed: Item ${itemId} not found.` };
+  }
+  if (!item.filemoon_url) {
+    return { success: false, message: `Restart failed: Item ${itemId} does not have a Filemoon filecode (was it uploaded?).` };
+  }
+  // Optional: Check if status is actually 'failed' before allowing restart
+  // if (item.status !== 'failed') {
+  //   return { success: false, message: `Restart failed: Item ${itemId} is not in 'failed' state.` };
+  // }
+
+  const filecode = item.filemoon_url;
+
+  try {
+    const apiUrl = `https://filemoonapi.com/api/encoding/restart?key=${apiKey}&file_code=${filecode}`;
+    console.log(`Restart Encoding: Calling API for item ${itemId} (Filecode: ${filecode}) -> ${apiUrl}`);
+    const response = await axios.get(apiUrl, { timeout: 10000 }); // 10s timeout
+
+    if (response.data?.status !== 200) {
+      throw new Error(`Filemoon API returned non-200 status: ${response.data?.status} - ${response.data?.msg}`);
+    }
+
+    console.log(`Restart Encoding: API success for item ${itemId}. Msg: ${response.data?.msg}`);
+
+    // If successful, update local status back to 'uploaded' to allow polling again
+    // Reset progress and update message
+    stmtUpdateEncodingStatus.run(
+      'uploaded', // Reset status to allow polling again
+      null,       // Reset progress
+      'Encoding restart requested.', // New message
+      Date.now(),
+      item.id
+    );
+    console.log(`Restart Encoding: Updated item ${itemId} status to 'uploaded' in DB.`);
+
+    return { success: true, message: response.data?.msg || 'Encoding restart request successful.' };
+
+  } catch (error: any) {
+    console.error(`Restart Encoding Failed: API call error for item ${itemId} (Filecode: ${filecode}):`, error.response?.data || error.message || error);
+    let errorMessage = 'Failed to request encoding restart.';
+    if (axios.isAxiosError(error)) {
+        errorMessage = `Filemoon API error: ${error.response?.status} - ${error.response?.data?.msg || error.message}`;
+    } else if (error instanceof Error) {
+        errorMessage = `Restart error: ${error.message}`;
+    }
+    // Do NOT change the local status if the API call fails
+    return { success: false, message: errorMessage };
+  }
+}
+
+// Start the polling loop
+setInterval(pollEncodingStatus, POLLING_INTERVAL);
+// Run once on startup after a short delay 

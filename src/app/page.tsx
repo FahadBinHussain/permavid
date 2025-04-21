@@ -2,6 +2,58 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import React from 'react';
+
+// --- Add SVG Icons ---
+const icons: { [key: string]: React.JSX.Element } = {
+  queued: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    </svg>
+  ),
+  downloading: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+    </svg>
+  ),
+  completed: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" viewBox="0 0 20 20" fill="currentColor">
+      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+    </svg>
+  ),
+  uploading: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+    </svg>
+  ),
+  transferring: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+       <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /> // Reuse upload icon
+    </svg>
+  ),
+  encoding: (
+     <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+     </svg>
+  ),
+  encoded: (
+     <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" viewBox="0 0 20 20" fill="currentColor">
+       <path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" />
+       <path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" /> // Film/Video icon
+     </svg>
+  ),
+  failed: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" viewBox="0 0 20 20" fill="currentColor">
+      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-10.707a1 1 0 00-1.414-1.414L10 8.586 7.707 6.293a1 1 0 00-1.414 1.414L8.586 10l-2.293 2.293a1 1 0 101.414 1.414L10 11.414l2.293 2.293a1 1 0 001.414-1.414L11.414 10l2.293-2.293z" clipRule="evenodd" />
+    </svg>
+  ),
+  cancelled: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+    </svg>
+  ),
+};
 
 // Define the structure for a queue item (matching backend)
 interface QueueItem {
@@ -451,17 +503,18 @@ export default function Home() {
                     </div>
                     {/* Keep status badge fixed size */}
                     <div className="ml-2 flex-shrink-0 flex">
-                      <p className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${ 
+                      <p className={`px-2 py-0.5 inline-flex items-center text-xs leading-5 font-semibold rounded-full ${ // Added py-0.5 and items-center
                         item.status === 'completed' ? 'bg-green-100 text-green-800' : 
                         item.status === 'failed' ? 'bg-red-100 text-red-800' : 
                         item.status === 'downloading' ? 'bg-yellow-100 text-yellow-800' : 
                         item.status === 'uploading' ? 'bg-blue-100 text-blue-800' :
                         item.status === 'cancelled' ? 'bg-gray-100 text-gray-800' :
-                        item.status === 'transferring' ? 'bg-blue-100 text-blue-800' :
+                        item.status === 'transferring' ? 'bg-blue-100 text-blue-800' : // Keep color for transferring
                         item.status === 'encoding' ? 'bg-cyan-100 text-cyan-800' :
-                        item.status === 'encoded' ? 'bg-indigo-100 text-indigo-800' :
-                        'bg-purple-100 text-purple-800'
+                        item.status === 'encoded' ? 'bg-indigo-100 text-indigo-800' : // More distinct color for encoded
+                        'bg-purple-100 text-purple-800' // Default for queued
                       }`}>
+                        {icons[item.status] || null} {/* Add icon here */}
                         {item.status}
                       </p>
                     </div>

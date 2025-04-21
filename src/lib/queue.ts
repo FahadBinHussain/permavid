@@ -53,6 +53,7 @@ try {
       info_json_path TEXT, 
       filemoon_url TEXT, 
       encoding_progress INTEGER, 
+      thumbnail_url TEXT, -- Add thumbnail URL column
       added_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -69,7 +70,22 @@ try {
       console.log('Database schema migration successful.');
     }
   } catch (migrationError: any) {
-    console.error('FATAL: Queue table schema migration failed!', migrationError);
+    console.error('FATAL: Queue table schema migration (encoding_progress) failed!', migrationError);
+    throw new Error(`Failed to migrate queue table schema: ${migrationError.message}`);
+  }
+  
+  // --- Schema Migration: Add thumbnail_url if it doesn't exist ---
+  try {
+    const columns = db.pragma("table_info(queue)") as { name: string }[]; // Re-fetch columns info
+    const hasThumbnailUrl = columns.some(col => col.name === 'thumbnail_url');
+
+    if (!hasThumbnailUrl) {
+      console.log('Migrating database schema: Adding thumbnail_url column to queue table...');
+      db.exec('ALTER TABLE queue ADD COLUMN thumbnail_url TEXT');
+      console.log('Database schema migration successful.');
+    }
+  } catch (migrationError: any) {
+    console.error('FATAL: Queue table schema migration (thumbnail_url) failed!', migrationError);
     throw new Error(`Failed to migrate queue table schema: ${migrationError.message}`);
   }
   // ------------------------------------------------------------------
@@ -113,6 +129,10 @@ const stmtUpdateUploadProgress = db.prepare(
 const stmtUpdateAfterUpload = db.prepare(
     'UPDATE queue SET status = ?, filemoon_url = ?, message = ?, updated_at = ? WHERE id = ?' // Store filecode in filemoon_url for now
 );
+// Add statement to update download progress (only message and updated_at)
+const stmtUpdateDownloadProgress = db.prepare(
+    'UPDATE queue SET message = ?, updated_at = ? WHERE id = ?'
+);
 const stmtClearCompleted = db.prepare("DELETE FROM queue WHERE status = 'completed'");
 const stmtClearFailed = db.prepare("DELETE FROM queue WHERE status = 'failed' OR status = 'uploading'");
 const stmtClearFinished = db.prepare("DELETE FROM queue WHERE status = 'completed' OR status = 'failed'");
@@ -132,17 +152,22 @@ const stmtUpdateEncodingStatus = db.prepare(
 // Add statement to fetch item by filecode (stored in filemoon_url)
 const stmtGetItemByFilecode = db.prepare('SELECT * FROM queue WHERE filemoon_url = ?');
 
+// Add statement to get items that have been uploaded/transferred but not yet encoded or failed during encoding
+const stmtGetItemsToCheck = db.prepare(
+    "SELECT id, filemoon_url, status, encoding_progress, updated_at FROM queue WHERE status = 'transferring' OR status = 'encoding'"
+);
+
 // --- Queue Item Type (Matches DB) ---
 export interface QueueItem {
     id: string;
     url: string;
-    status: 'queued' | 'downloading' | 'completed' | 'failed' | 'uploading' | 'uploaded' | 'cancelled' | 'encoding' | 'encoded';
+    status: 'queued' | 'downloading' | 'completed' | 'failed' | 'uploading' | 'uploaded' | 'cancelled' | 'encoding' | 'encoded' | 'transferring';
     title?: string | null;
     message?: string | null;
     local_path?: string | null;
     info_json_path?: string | null;
     filemoon_url?: string | null; // Stores the filecode
-    encoding_progress?: number | null; // <-- Add encoding progress field
+    encoding_progress?: number | null;
     added_at: number;
     updated_at: number;
 }
@@ -398,87 +423,125 @@ async function downloadVideo(item: QueueItem, downloadDir: string): Promise<Down
 
         console.log(`Executing download: yt-dlp.exe ${args.join(' ')}`);
         
-        // Use execFile directly instead of the promisified version so we can get the child process
-        return new Promise((resolve, reject) => {
-            childProcess = execFile('yt-dlp.exe', args, { timeout: 1800000, encoding: 'utf-8' }, 
-                (error, stdout, stderr) => {
-                // Remove this process from activeDownloads when it completes
-                activeDownloads.delete(item.id);
-                
-                if (error) {
-                    // Check if this was a cancellation
-                    if (error.killed) {
-                        console.log(`Download process for ${item.id} was cancelled.`);
-                        return resolve({
-                            success: false,
-                            message: 'Download cancelled by user.',
-                            title: videoTitle
-                        });
-                    }
-                    
-                    console.error(`yt-dlp error for ${item.id}:`, error);
-                    return reject(error);
-                }
-                
-                if (stderr) {
-                    console.error('yt-dlp stderr:', stderr);
-                    if (stderr.includes('ERROR:')) {
-                        const errorMatch = stderr.match(/ERROR:(.*)/);
-                        return reject(new Error(`yt-dlp error: ${errorMatch ? errorMatch[1].trim() : stderr}`));
-                    }
-                    // Consider other stderr content as warnings/info
-                }
-                
-                console.log('yt-dlp stdout:', stdout);
-                
-                // After successful download, verify files
-                (async () => {
+        let lastProgressUpdate = 0;
+        const progressUpdateInterval = 1500; // Update DB max every 1.5 seconds
+        let latestPercent = 0; // Store latest parsed percentage
+
+        childProcess = execFile('yt-dlp.exe', args, { 
+            timeout: 1800000, // Keep 30 min timeout
+            encoding: 'utf-8', // Important for reading stdout
+            maxBuffer: 10 * 1024 * 1024 // Increase buffer size (e.g., 10MB) for potentially verbose output
+        });
+
+        // Store the child process for potential cancellation
+        activeDownloads.set(item.id, childProcess);
+
+        // --- Listen to stdout for progress --- 
+        childProcess.stdout?.on('data', (data) => {
+            const output = data.toString();
+            // console.log('yt-dlp stdout chunk:', output); // Debug: Log raw output
+
+            // Regex to find download percentage (handles variations)
+            const progressMatch = output.match(/\[download\]\s+([0-9.]+)\%/);
+            if (progressMatch && progressMatch[1]) {
+                const currentPercent = parseFloat(progressMatch[1]);
+                latestPercent = Math.max(latestPercent, currentPercent); // Keep track of highest percentage seen
+
+                // Throttle DB updates
+                const now = Date.now();
+                if (now - lastProgressUpdate > progressUpdateInterval) {
+                    const progressMessage = `Downloading: ${Math.floor(latestPercent)}%`;
                     try {
-                        // Check if the predicted info.json exists
-                        try {
-                            await fsPromises.access(infoJsonPath);
-                            console.log(`Found info.json: ${infoJsonPath}`);
-                        } catch (e) {
-                            console.warn(`Could not find expected info.json file: ${infoJsonPath}`);
-                            infoJsonPath = ''; // Reset path if not found
-                        }
-
-                        // Find the actual video file matching the pattern
-                        const files = await fsPromises.readdir(downloadDir);
-                        const videoFile = files.find(f => f.startsWith(safeTitle) && f !== `${safeTitle}.info.json`);
-
-                        if (!videoFile && !infoJsonPath) {
-                            // Neither video nor info file found
-                            return reject(new Error('Download finished according to yt-dlp, but no video or info.json file found.'));
-                        } else if (!videoFile && infoJsonPath) {
-                            // Only info file found
-                            console.warn(`Video file starting with '${safeTitle}' not found, but info.json exists.`);
-                            return resolve({
-                                success: true, // Consider metadata download a partial success
-                                message: 'Metadata downloaded, video file missing/failed.',
-                                title: videoTitle,
-                                local_path: undefined,
-                                info_json_path: infoJsonPath
-                            });
-                        } else if (videoFile) {
-                            localVideoPath = path.join(downloadDir, videoFile);
-                            console.log(`Found video file: ${localVideoPath}`);
-                            return resolve({
-                                success: true,
-                                message: `Download complete: ${videoFile ?? 'Metadata only'}`,
-                                title: videoTitle,
-                                local_path: localVideoPath || undefined, // Return path or undefined
-                                info_json_path: infoJsonPath || undefined
-                            });
-                        }
-                    } catch (verifyError) {
-                        reject(verifyError);
+                        stmtUpdateDownloadProgress.run(progressMessage, now, item.id);
+                        // console.log(`Item ${item.id}: Updated download progress to ${latestPercent}%`); // Debug log
+                        lastProgressUpdate = now;
+                    } catch (dbError) {
+                        console.error(`Item ${item.id}: Failed to update download progress in DB:`, dbError);
                     }
-                })();
+                }
+            }
+        });
+
+        // --- Listen to stderr for errors --- 
+        childProcess.stderr?.on('data', (data) => {
+             console.error(`yt-dlp stderr for ${item.id}:`, data.toString());
+            // Don't reject here, wait for the exit code
+        });
+
+        // --- Return a new Promise that resolves/rejects based on process exit --- 
+        return new Promise((resolve, reject) => {
+            childProcess?.on('close', (code) => {
+                // Remove this process from activeDownloads when it exits
+                activeDownloads.delete(item.id);
+
+                if (code === 0) {
+                    // Process finished successfully, now verify files
+                    console.log(`yt-dlp process for ${item.id} finished successfully (code 0). Verifying files...`);
+                    (async () => {
+                        try {
+                             // Ensure 100% is logged if process completes successfully
+                             if(latestPercent < 100) {
+                                stmtUpdateDownloadProgress.run(`Downloading: 100%`, Date.now(), item.id);
+                             }
+
+                            // Check if the predicted info.json exists
+                            try {
+                                await fsPromises.access(infoJsonPath);
+                                console.log(`Found info.json: ${infoJsonPath}`);
+                            } catch (e) {
+                                console.warn(`Could not find expected info.json file: ${infoJsonPath}`);
+                                infoJsonPath = ''; // Reset path if not found
+                            }
+
+                            // Find the actual video file matching the pattern
+                            const files = await fsPromises.readdir(downloadDir);
+                            const videoFile = files.find(f => f.startsWith(safeTitle) && f !== `${safeTitle}.info.json`);
+
+                            if (!videoFile && !infoJsonPath) {
+                                return reject(new Error('Download finished successfully (code 0), but no video or info.json file found.'));
+                            } else if (!videoFile && infoJsonPath) {
+                                console.warn(`Video file starting with '${safeTitle}' not found, but info.json exists.`);
+                                return resolve({ success: true, message: 'Metadata downloaded, video file missing/failed.', title: videoTitle, local_path: undefined, info_json_path: infoJsonPath });
+                            } else if (videoFile) {
+                                localVideoPath = path.join(downloadDir, videoFile);
+                                console.log(`Found video file: ${localVideoPath}`);
+                                return resolve({ success: true, message: `Download complete: ${videoFile ?? 'Metadata only'}`, title: videoTitle, local_path: localVideoPath || undefined, info_json_path: infoJsonPath || undefined });
+                            }
+                        } catch (verifyError) {
+                            reject(verifyError);
+                        }
+                    })();
+                } else {
+                    // Process exited with an error code
+                    console.error(`yt-dlp process for ${item.id} exited with code ${code}.`);
+                    // Check if it was killed due to cancellation flag (this check might be less reliable now)
+                    // const currentDbStatus = (stmtGetItemById.get(item.id) as QueueItem | undefined)?.status;
+                    // if (currentDbStatus === 'cancelled') { ... }
+                    // Relying on the 'killed' signal check might be better
+                    reject(new Error(`yt-dlp process exited with error code ${code}. Check stderr logs.`));
+                }
             });
-            
-            // Store the child process for potential cancellation
-            activeDownloads.set(item.id, childProcess);
+
+            // Handle process errors (e.g., command not found)
+            childProcess?.on('error', (err) => {
+                activeDownloads.delete(item.id);
+                console.error(`Failed to start yt-dlp process for ${item.id}:`, err);
+                reject(err); // Reject the promise on process error
+            });
+
+            // Check for manual cancellation via kill signal
+            childProcess?.on('exit', (code, signal) => {
+                 if (signal === 'SIGKILL' || signal === 'SIGTERM') {
+                    console.log(`Download process for ${item.id} was killed by signal: ${signal}.`);
+                    activeDownloads.delete(item.id); // Ensure removal
+                    // Resolve with failure, indicating cancellation
+                    resolve({
+                        success: false,
+                        message: 'Download cancelled by user.',
+                        title: videoTitle
+                    });
+                 }
+            });
         });
 
     } catch (downloadError: any) {
@@ -618,13 +681,13 @@ export async function uploadToFilemoon(itemId: string): Promise<{ success: boole
         }
 
         const filecode = uploadedFile.filecode;
-        const filemoonUrl = `https://filemoon.to/d/${filecode}`; // Construct a basic URL, might need adjustment
+        const filemoonUrl = `https://filemoon.to/d/${filecode}`; 
         console.log(`Item ${itemId}: Upload successful! Filecode: ${filecode}, URL: ${filemoonUrl}`);
         
-        // 6. Update DB to 'uploaded'
-        console.log(`Item ${itemId}: Attempting to update database status to 'uploaded'...`);
-        stmtUpdateAfterUpload.run('uploaded', filecode, `Upload successful. Filecode: ${filecode}`, Date.now(), item.id);
-        console.log(`Item ${itemId}: Database status updated to 'uploaded'.`);
+        // 6. Update DB to 'transferring' 
+        console.log(`Item ${itemId}: Attempting to update database status to 'transferring'...`);
+        stmtUpdateAfterUpload.run('transferring', filecode, `Upload successful. Waiting for transfer/encoding...`, Date.now(), item.id); // <-- Change status to transferring
+        console.log(`Item ${itemId}: Database status updated to 'transferring'.`);
 
         // 7. Optional: Delete local file if configured in settings
         if (shouldDeleteAfterUpload()) { // <-- Use setting function
@@ -827,89 +890,75 @@ export function cancelItem(itemId: string): { success: boolean; message: string 
 
 let isPollingEncoding = false;
 const POLLING_INTERVAL = 30 * 1000; // Check every 30 seconds
-const UPLOADED_STATE_TIMEOUT = 30 * 60 * 1000; // 10 minutes in milliseconds
+// const UPLOADED_STATE_TIMEOUT = 10 * 60 * 1000; // Old 10 minutes 
+const TRANSFERRING_STATE_TIMEOUT = 30 * 60 * 1000; // New: 30 minutes in milliseconds for transferring state
+const ENCODING_STATE_TIMEOUT = 60 * 60 * 1000; // New: 60 minutes in milliseconds for encoding state
 
 async function pollEncodingStatus() {
     if (isPollingEncoding) return;
     isPollingEncoding = true;
 
-    const apiKey = getSetting('filemoon_api_key'); // <-- Read API key from settings
+    const apiKey = getSetting('filemoon_api_key'); 
     if (!apiKey) {
         console.error('Encoding Poll: Filemoon API key not found in settings, skipping poll.');
         isPollingEncoding = false;
         return;
     }
 
-    // Keep track of filecodes reported by the API in this cycle
     const filecodesFromApi = new Set<string>();
-    // Store local items that *should* be polled
     let localItemsToPoll: QueueItem[] = [];
 
     try {
-        // --- Get local items first --- 
         try {
-            // Fetch ID, filemoon_url, status, progress for items needing check
+            // Fetch items in 'transferring' or 'encoding' state
             localItemsToPoll = db.prepare(
-                "SELECT id, filemoon_url, status, encoding_progress, updated_at FROM queue WHERE status = 'uploaded' OR status = 'encoding'"
+                "SELECT id, filemoon_url, status, encoding_progress, updated_at FROM queue WHERE status = 'transferring' OR status = 'encoding'" // <-- Updated query
             ).all() as QueueItem[];
         } catch (dbError: any) {
             console.error('Encoding Poll: DB error fetching local items to check:', dbError);
             isPollingEncoding = false;
-            return; // Cannot proceed without local items
+            return; 
         }
 
         if (localItemsToPoll.length === 0) {
-            // console.log('Encoding Poll: No local items in uploaded/encoding state.');
             isPollingEncoding = false;
             return;
         }
 
-        // --- Get list of ALL encoding files from Filemoon API --- 
         const apiUrl = `https://filemoonapi.com/api/encoding/list?key=${apiKey}`;
-        console.log(`Encoding Poll: Fetching encoding list from ${apiUrl}`);
-        const response = await axios.get(apiUrl, { timeout: 15000 }); // 15s timeout for status check
+        console.log(`Encoding Poll: Fetching encoding list from ${apiUrl} for ${localItemsToPoll.length} items...`);
+        const response = await axios.get(apiUrl, { timeout: 15000 }); 
 
         if (response.data?.status !== 200 || !Array.isArray(response.data?.result)) {
             console.warn(`Encoding Poll: Received non-200 or invalid response structure from /encoding/list. Status: ${response.data?.status}, Msg: ${response.data?.msg}`);
-            // Don't return immediately, proceed to check for potentially completed items below
         } 
         
         const encodingResults = Array.isArray(response.data?.result) ? response.data.result : [];
+        console.log(`Encoding Poll: Received status for ${encodingResults.length} actual item(s) from Filemoon API.`);
 
-        console.log(`Encoding Poll: Received status for ${encodingResults.length} item(s) from Filemoon.`);
-
-        // --- Process each result from the API --- 
+        // Process results from the API
         for (const result of encodingResults) {
             const filecode = result.file_code;
-            if (!filecode) {
-                console.warn(`Encoding Poll: Skipping API result item with missing file_code:`, result);
-                continue; // Skip items without a filecode
-            }
-
-            // Add to set of codes reported by API
+            if (!filecode) continue;
             filecodesFromApi.add(filecode);
 
-            // Find the corresponding item in our *already fetched* local items
             const localItem = localItemsToPoll.find(item => item.filemoon_url === filecode);
+            if (!localItem) continue; 
 
-            if (!localItem) {
-                // Filecode from API not found in our local items needing check (maybe status changed locally since fetch?)
-                // console.log(`Encoding Poll: Filecode ${filecode} from API not found in local items needing check.`);
-                continue; 
-            }
-
-            // Process the status from the API for this specific item
-            const encodingStatus = result.status?.toUpperCase(); // Normalize status
+            // Process status for item found in API list
+            const encodingStatus = result.status?.toUpperCase();
             const progress = result.progress ? parseInt(result.progress, 10) : null;
             const errorMsg = result.error ?? null;
 
             let message = '';
-            let newDbStatus: QueueItem['status'] = localItem.status; // Default to current status
-            let encodingProgressValue = localItem.encoding_progress; // Default to current progress
+            let newDbStatus: QueueItem['status'] = localItem.status; 
+            let encodingProgressValue = localItem.encoding_progress;
+            let justFinishedEncoding = false; // Flag to trigger thumbnail fetch
 
-            if (encodingStatus === 'PENDING') { // <-- Handle PENDING explicitly
-                newDbStatus = 'encoding'; // Keep it as encoding locally
-                encodingProgressValue = progress ?? 0; // Use progress if available, else 0
+            // Determine new status based on API response
+            if (encodingStatus === 'PENDING') { 
+                newDbStatus = 'encoding'; 
+                encodingProgressValue = progress ?? 0; 
                 message = 'Pending in encoding queue...';
             } else if (encodingStatus === 'ENCODING' || encodingStatus === 'PROCESSING') {
                 newDbStatus = 'encoding';
@@ -919,71 +968,71 @@ async function pollEncodingStatus() {
                  newDbStatus = 'encoded';
                  encodingProgressValue = 100;
                  message = 'Encoding complete.';
+                 justFinishedEncoding = true; // Set flag
                  console.log(`Encoding Poll: Item ${localItem.id} (Filecode: ${filecode}) finished encoding according to API.`);
             } else if (encodingStatus === 'ERROR') {
                 newDbStatus = 'failed';
-                encodingProgressValue = null; // Clear progress on error
+                encodingProgressValue = null; 
                 message = `Encoding failed: ${errorMsg ?? 'Unknown error'}`;
                  console.error(`Encoding Poll: Item ${localItem.id} (Filecode: ${filecode}) failed encoding: ${message}`);
             } else {
-                 // Status is undefined, null, or some other unexpected value from API
                  console.warn(`Encoding Poll: Item ${localItem.id} (Filecode: ${filecode}) has unknown API status '${result.status}'. Keeping local status '${localItem.status}'.`);
                  message = result.status ? `Unknown API status: ${result.status}` : 'Waiting for encoding status...'; 
-                 encodingProgressValue = progress; // Store progress if available, even with unknown status
-                 // Don't change newDbStatus from its default (current local status)
+                 encodingProgressValue = progress; 
             }
 
-            // Update the database only if status or progress actually changed
+            // Update DB only if status or progress changed
             if (newDbStatus !== localItem.status || encodingProgressValue !== localItem.encoding_progress) {
-                console.log(`Encoding Poll: Preparing update for ${localItem.id}. Current: ${localItem.status} (${localItem.encoding_progress}%) -> New: ${newDbStatus} (${encodingProgressValue}%) API Status: ${encodingStatus}`);
-                stmtUpdateEncodingStatus.run(
-                    newDbStatus,
-                    encodingProgressValue,
-                    message,
-                    Date.now(),
-                    localItem.id // Use the local item's ID for the update
-                );
-                console.log(`Encoding Poll: Updated item ${localItem.id} to status ${newDbStatus} (${encodingProgressValue}%)`);
+                console.log(`Encoding Poll: Updating ${localItem.id}. From: ${localItem.status} (${localItem.encoding_progress}%) -> To: ${newDbStatus} (${encodingProgressValue}%) (API: ${encodingStatus})`);
+                stmtUpdateEncodingStatus.run(newDbStatus, encodingProgressValue, message, Date.now(), localItem.id);
+                // Fetch thumbnail if it just finished encoding successfully
+                if (justFinishedEncoding && newDbStatus === 'encoded' && localItem.filemoon_url) {
+                    fetchAndStoreThumbnail(localItem.id, localItem.filemoon_url);
+                }
+            } else if (localItem.status === 'encoding') {
+                 // --- Add check for encoding timeout --- 
+                 const timeSinceLastUpdate = Date.now() - localItem.updated_at;
+                 if (timeSinceLastUpdate > ENCODING_STATE_TIMEOUT) {
+                     console.warn(`Encoding Poll: Item ${localItem.id} stuck in 'encoding' state for >${ENCODING_STATE_TIMEOUT / 60000}min. Marking as failed.`);
+                     stmtUpdateEncodingStatus.run(
+                         'failed', // New status
+                         localItem.encoding_progress, // Keep last known progress
+                         `Processing timed out (>${ENCODING_STATE_TIMEOUT / 60000}min in encoding state).`, // Message
+                         Date.now(),
+                         localItem.id
+                     );
+                     console.log(`Encoding Poll: Updated timed-out encoding item ${localItem.id} to status failed`);
+                 }
+                 // --- End encoding timeout check ---
             }
-        } // End of loop through API results
+        } 
 
-        // --- Check for local items NOT reported by the API --- 
-        console.log('Encoding Poll: Checking for local items potentially completed or still transferring...');
+        // Check for local items NOT reported by the API 
+        console.log('Encoding Poll: Checking for local items not present in API list...');
         for (const localItem of localItemsToPoll) {
             if (localItem.filemoon_url && !filecodesFromApi.has(localItem.filemoon_url)) {
-                // This item was 'uploaded' or 'encoding' locally, but API didn't mention it.
                 
                 if (localItem.status === 'encoding') {
-                    // If it WAS encoding and now disappeared, assume it's completed.
-                    console.log(`Encoding Poll: Item ${localItem.id} (Filecode: ${localItem.filemoon_url}) was 'encoding' and not in API list. Assuming complete.`);
-                    stmtUpdateEncodingStatus.run(
-                        'encoded', // New status
-                        100,       // Progress
-                        'Encoding presumed complete (not in API list).', // Message
-                        Date.now(),
-                        localItem.id
-                    );
-                    console.log(`Encoding Poll: Updated presumed complete item ${localItem.id} to status encoded (100%)`);
-                } else if (localItem.status === 'uploaded') {
-                    // If it was 'uploaded' and not yet seen in the API list... 
+                    // WAS encoding, now gone -> presume complete
+                    console.log(`Encoding Poll: Item ${localItem.id} was 'encoding' and not in API list. Assuming complete.`);
+                    stmtUpdateEncodingStatus.run('encoded', 100, 'Encoding presumed complete (not in API list).', Date.now(), localItem.id);
+                } else if (localItem.status === 'transferring') {
+                    // Was transferring, still not in API list -> apply timeout
                     const timeSinceLastUpdate = Date.now() - localItem.updated_at;
-                    
-                    if (timeSinceLastUpdate > UPLOADED_STATE_TIMEOUT) {
-                        // It's been stuck in 'uploaded' for too long without appearing in the API list.
-                        // Assume it completed very quickly or failed silently.
-                        console.warn(`Encoding Poll: Item ${localItem.id} (Filecode: ${localItem.filemoon_url}) stuck in 'uploaded' for >${UPLOADED_STATE_TIMEOUT / 60000}min. Assuming complete.`);
+                    if (timeSinceLastUpdate > TRANSFERRING_STATE_TIMEOUT) { // <-- Use new timeout value
+                        // Stuck in transferring for too long -> mark as failed (timeout)
+                        console.warn(`Encoding Poll: Item ${localItem.id} stuck in 'transferring' for >${TRANSFERRING_STATE_TIMEOUT / 60000}min. Marking as failed.`); // <-- Use new timeout value in log
                         stmtUpdateEncodingStatus.run(
-                            'encoded', // New status
-                            100,       // Progress
-                            `Encoding presumed complete (timeout: >${UPLOADED_STATE_TIMEOUT / 60000}min in uploaded state).`, // Message
+                            'failed', // New status
+                            null,     // Progress
+                            `Processing timed out (>${TRANSFERRING_STATE_TIMEOUT / 60000}min in transferring state).`, // Message <-- Use new timeout value in message
                             Date.now(),
                             localItem.id
                         );
-                        console.log(`Encoding Poll: Updated timed-out item ${localItem.id} to status encoded (100%)`);
+                        console.log(`Encoding Poll: Updated timed-out transferring item ${localItem.id} to status failed`);
                     } else {
-                         // It hasn't timed out yet, assume it's still transferring or waiting.
-                         console.log(`Encoding Poll: Item ${localItem.id} (Filecode: ${localItem.filemoon_url}) is 'uploaded' but not yet in encoding API list. Waiting (age: ${Math.round(timeSinceLastUpdate / 1000)}s)...`);
-                         // Do nothing, keep waiting.
+                         // Not timed out yet, keep waiting.
+                         console.log(`Encoding Poll: Item ${localItem.id} is 'transferring' but not yet in encoding API list. Waiting (age: ${Math.round(timeSinceLastUpdate / 1000)}s)...`);
                     }
                 }
             }
@@ -993,8 +1042,65 @@ async function pollEncodingStatus() {
         console.error(`Encoding Poll: Error during API call or processing:`, error.response?.data || error.message || error);
     } finally {
         isPollingEncoding = false;
-        // console.log("Encoding Poll: Finished list processing cycle.");
     }
+}
+
+// --- Thumbnail Fetching ---
+const stmtUpdateThumbnailUrl = db.prepare('UPDATE queue SET thumbnail_url = ?, updated_at = ? WHERE id = ?');
+
+async function fetchAndStoreThumbnail(itemId: string, filecode: string) {
+    const apiKey = getSetting('filemoon_api_key');
+    if (!apiKey) {
+        console.warn(`Thumbnail Fetch: Cannot fetch thumbnail for ${itemId}, API key missing.`);
+        return;
+    }
+
+    try {
+        const apiUrl = `https://filemoonapi.com/api/images/thumb?key=${apiKey}&file_code=${filecode}`;
+        console.log(`Thumbnail Fetch: Requesting for ${itemId} (Filecode: ${filecode}) -> ${apiUrl}`);
+        const response = await axios.get(apiUrl, { timeout: 5000 }); // 5s timeout
+
+        if (response.data?.status === 200 && response.data?.result?.thumbnail) {
+            const thumbnailUrl = response.data.result.thumbnail;
+            console.log(`Thumbnail Fetch: Success for ${itemId}. URL: ${thumbnailUrl}`);
+            stmtUpdateThumbnailUrl.run(thumbnailUrl, Date.now(), itemId);
+        } else {
+            console.warn(`Thumbnail Fetch: Failed for ${itemId}. Status: ${response.data?.status}, Msg: ${response.data?.msg}`);
+        }
+    } catch (error: any) {
+        console.error(`Thumbnail Fetch: Error fetching thumbnail for ${itemId} (Filecode: ${filecode}):`, error.response?.data || error.message);
+    }
+}
+
+// --- Updated Get Queue Functions ---
+
+/**
+ * Gets items that are currently active (not completed/encoded or failed/cancelled).
+ */
+export function getActiveQueue(): QueueItem[] {
+  try {
+    // Exclude final states
+    return db.prepare(
+        "SELECT * FROM queue WHERE status NOT IN ('encoded', 'failed', 'cancelled') ORDER BY added_at DESC"
+    ).all() as QueueItem[];
+  } catch (error: any) {
+    console.error('Failed to fetch active queue from DB:', error);
+    return []; 
+  }
+}
+
+/**
+ * Gets only the successfully encoded items.
+ */
+export function getEncodedItems(): QueueItem[] {
+  try {
+    return db.prepare(
+        "SELECT * FROM queue WHERE status = 'encoded' ORDER BY updated_at DESC" // Order by completion time
+    ).all() as QueueItem[];
+  } catch (error: any) {
+    console.error('Failed to fetch encoded items from DB:', error);
+    return [];
+  }
 }
 
 // Start the polling loop

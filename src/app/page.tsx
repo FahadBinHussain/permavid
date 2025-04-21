@@ -7,7 +7,7 @@ import Link from 'next/link';
 interface QueueItem {
   id: string;
   url: string;
-  status: 'queued' | 'downloading' | 'completed' | 'failed' | 'uploading' | 'transferring' | 'cancelled' | 'encoding' | 'encoded'; // Note: encoded won't appear here now
+  status: 'queued' | 'downloading' | 'completed' | 'failed' | 'uploading' | 'uploaded' | 'transferring' | 'cancelled' | 'encoding' | 'encoded';
   message?: string;
   title?: string;
   filemoon_url?: string; // Stores the filecode
@@ -239,6 +239,13 @@ export default function Home() {
     }
   };
 
+  // *** ADDED: Filter the queue for display ***
+  const activeQueueItems = queue.filter(item => 
+    item.status !== 'encoded' && 
+    item.status !== 'failed' && 
+    item.status !== 'cancelled'
+  );
+
   // --- Settings Modal Component (Simplified Inline) ---
   const SettingsModal = () => (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex justify-center items-center z-50">
@@ -364,7 +371,8 @@ export default function Home() {
         {/* Queue Display */} 
         <div className="w-full max-w-4xl">
           <div className="flex justify-between items-center mb-4">
-             <h2 className="text-2xl font-semibold">Download Queue ({queue.length} items)</h2>
+             {/* *** UPDATED: Use filtered list length for display *** */}
+             <h2 className="text-2xl font-semibold">Download Queue ({activeQueueItems.length} items)</h2>
              {/* --- Consolidated Clear Button Dropdown --- */}
              <div className="relative">
                  <button
@@ -385,7 +393,8 @@ export default function Home() {
                          <div className="py-1" role="menu" aria-orientation="vertical" aria-labelledby="options-menu">
                              <button
                                  onClick={() => { handleClearQueue('completed'); setShowClearDropdown(false); }}
-                                 disabled={!queue.some(item => item.status === 'completed')}
+                                 // *** NOTE: disabled check uses the FULL `queue` state ***
+                                 disabled={!queue.some(item => item.status === 'completed')} // Keep using full queue
                                  className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
                                  role="menuitem"
                              >
@@ -393,7 +402,8 @@ export default function Home() {
                              </button>
                              <button
                                  onClick={() => { handleClearQueue('failed'); setShowClearDropdown(false); }}
-                                 disabled={!queue.some(item => item.status === 'failed' || item.status === 'uploading')}
+                                 // *** NOTE: disabled check uses the FULL `queue` state ***
+                                 disabled={!queue.some(item => item.status === 'failed' || item.status === 'uploading')} // Keep using full queue
                                  className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
                                  role="menuitem"
                              >
@@ -401,7 +411,8 @@ export default function Home() {
                              </button>
                              <button
                                  onClick={() => { handleClearQueue('cancelled'); setShowClearDropdown(false); }}
-                                 disabled={!queue.some(item => item.status === 'cancelled')}
+                                 // *** NOTE: disabled check uses the FULL `queue` state ***
+                                 disabled={!queue.some(item => item.status === 'cancelled')} // Keep using full queue
                                  className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
                                  role="menuitem"
                              >
@@ -409,7 +420,8 @@ export default function Home() {
                              </button>
                              <button
                                  onClick={() => { handleClearQueue('finished'); setShowClearDropdown(false); }}
-                                 disabled={!queue.some(item => item.status === 'completed' || item.status === 'failed')}
+                                 // *** NOTE: disabled check uses the FULL `queue` state ***
+                                 disabled={!queue.some(item => item.status === 'completed' || item.status === 'failed')} // Keep using full queue
                                  className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
                                  role="menuitem"
                              >
@@ -423,12 +435,13 @@ export default function Home() {
 
           <div className="bg-white shadow overflow-hidden sm:rounded-md">
             <ul role="list" className="divide-y divide-gray-200">
-              {queue.length === 0 && (
+              {/* *** UPDATED: Use filtered list for display checks and mapping *** */}
+              {activeQueueItems.length === 0 && (
                 <li className="px-4 py-4 text-center text-gray-500">
                   Queue is empty.
                 </li>
               )}
-              {queue.map((item) => (
+              {activeQueueItems.map((item) => (
                 <li key={item.id} className="px-4 py-4 sm:px-6">
                   {/* Top Row: Title and Status Badge */}
                   <div className="flex items-center justify-between space-x-2">
@@ -501,10 +514,10 @@ export default function Home() {
                              {cancellingItemId === item.id ? 'Cancelling...' : 'Cancel'}
                            </button>
                          )}
-                         {/* Display Filemoon Link if available (transferring, encoding, or encoded) */}
-                         {(item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.filemoon_url && (
+                         {/* Display Filemoon Link if available (uploaded, transferring, encoding, or encoded) */}
+                         {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.filemoon_url && (
                            <a 
-                             href={`https://filemoon.to/d/${item.filemoon_url}`}
+                             href={`https://filemoon.sx/d/${item.filemoon_url}`}
                              target="_blank" 
                              rel="noopener noreferrer"
                              className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700"

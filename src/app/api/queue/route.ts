@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getActiveQueue } from '@/lib/queue'; // <-- Change to getActiveQueue
+import { getQueue, QueueItem } from '@/lib/queue';
 
 export async function GET(request: Request) {
   try {
-    const currentQueue = getActiveQueue(); // <-- Use getActiveQueue
+    const currentQueue = getQueue();
     return NextResponse.json(currentQueue);
   } catch (error: any) {
-    console.error('Error fetching active queue:', error);
-    return NextResponse.json({ error: 'Failed to fetch active queue state' }, { status: 500 });
+    console.error('Error fetching full queue:', error);
+    return NextResponse.json({ error: 'Failed to fetch full queue state' }, { status: 500 });
   }
 } 

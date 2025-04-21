@@ -912,7 +912,7 @@ async function pollEncodingStatus() {
         try {
             // Fetch items in 'transferring' or 'encoding' state
             localItemsToPoll = db.prepare(
-                "SELECT id, filemoon_url, status, encoding_progress, updated_at FROM queue WHERE status = 'transferring' OR status = 'encoding'" // <-- Updated query
+                "SELECT id, filemoon_url, status, encoding_progress, updated_at FROM queue WHERE status = 'uploaded' OR status = 'transferring' OR status = 'encoding'"
             ).all() as QueueItem[];
         } catch (dbError: any) {
             console.error('Encoding Poll: DB error fetching local items to check:', dbError);
@@ -1012,23 +1012,24 @@ async function pollEncodingStatus() {
                     // WAS encoding, now gone -> presume complete
                     console.log(`Encoding Poll: Item ${localItem.id} was 'encoding' and not in API list. Assuming complete.`);
                     stmtUpdateEncodingStatus.run('encoded', 100, 'Encoding presumed complete (not in API list).', Date.now(), localItem.id);
-                } else if (localItem.status === 'transferring') {
-                    // Was transferring, still not in API list -> apply timeout
+                } else if (localItem.status === 'transferring' || localItem.status === 'uploaded') {
+                    // *** UPDATED: Include 'uploaded' in timeout check ***
+                    // Was transferring/uploaded, still not in API list -> apply timeout
                     const timeSinceLastUpdate = Date.now() - localItem.updated_at;
                     if (timeSinceLastUpdate > TRANSFERRING_STATE_TIMEOUT) { // <-- Use new timeout value
-                        // Stuck in transferring for too long -> mark as failed (timeout)
-                        console.warn(`Encoding Poll: Item ${localItem.id} stuck in 'transferring' for >${TRANSFERRING_STATE_TIMEOUT / 60000}min. Marking as failed.`); // <-- Use new timeout value in log
+                        // Stuck in transferring/uploaded for too long -> mark as failed (timeout)
+                        console.warn(`Encoding Poll: Item ${localItem.id} stuck in '${localItem.status}' for >${TRANSFERRING_STATE_TIMEOUT / 60000}min. Marking as failed.`); // <-- Use new timeout value in log
                         stmtUpdateEncodingStatus.run(
                             'failed', // New status
                             null,     // Progress
-                            `Processing timed out (>${TRANSFERRING_STATE_TIMEOUT / 60000}min in transferring state).`, // Message <-- Use new timeout value in message
+                            `Processing timed out (>${TRANSFERRING_STATE_TIMEOUT / 60000}min in ${localItem.status} state).`, // Message <-- Use new timeout value in message
                             Date.now(),
                             localItem.id
                         );
-                        console.log(`Encoding Poll: Updated timed-out transferring item ${localItem.id} to status failed`);
+                        console.log(`Encoding Poll: Updated timed-out ${localItem.status} item ${localItem.id} to status failed`);
                     } else {
                          // Not timed out yet, keep waiting.
-                         console.log(`Encoding Poll: Item ${localItem.id} is 'transferring' but not yet in encoding API list. Waiting (age: ${Math.round(timeSinceLastUpdate / 1000)}s)...`);
+                         console.log(`Encoding Poll: Item ${localItem.id} is '${localItem.status}' but not yet in encoding API list. Waiting (age: ${Math.round(timeSinceLastUpdate / 1000)}s)...`);
                     }
                 }
             }

@@ -985,10 +985,6 @@ async function pollEncodingStatus() {
             if (newDbStatus !== localItem.status || encodingProgressValue !== localItem.encoding_progress) {
                 console.log(`Encoding Poll: Updating ${localItem.id}. From: ${localItem.status} (${localItem.encoding_progress}%) -> To: ${newDbStatus} (${encodingProgressValue}%) (API: ${encodingStatus})`);
                 stmtUpdateEncodingStatus.run(newDbStatus, encodingProgressValue, message, Date.now(), localItem.id);
-                // Fetch thumbnail if it just finished encoding successfully
-                if (justFinishedEncoding && newDbStatus === 'encoded' && localItem.filemoon_url) {
-                    fetchAndStoreThumbnail(localItem.id, localItem.filemoon_url);
-                }
             } else if (localItem.status === 'encoding') {
                  // --- Add check for encoding timeout --- 
                  const timeSinceLastUpdate = Date.now() - localItem.updated_at;
@@ -1042,33 +1038,6 @@ async function pollEncodingStatus() {
         console.error(`Encoding Poll: Error during API call or processing:`, error.response?.data || error.message || error);
     } finally {
         isPollingEncoding = false;
-    }
-}
-
-// --- Thumbnail Fetching ---
-const stmtUpdateThumbnailUrl = db.prepare('UPDATE queue SET thumbnail_url = ?, updated_at = ? WHERE id = ?');
-
-async function fetchAndStoreThumbnail(itemId: string, filecode: string) {
-    const apiKey = getSetting('filemoon_api_key');
-    if (!apiKey) {
-        console.warn(`Thumbnail Fetch: Cannot fetch thumbnail for ${itemId}, API key missing.`);
-        return;
-    }
-
-    try {
-        const apiUrl = `https://filemoonapi.com/api/images/thumb?key=${apiKey}&file_code=${filecode}`;
-        console.log(`Thumbnail Fetch: Requesting for ${itemId} (Filecode: ${filecode}) -> ${apiUrl}`);
-        const response = await axios.get(apiUrl, { timeout: 5000 }); // 5s timeout
-
-        if (response.data?.status === 200 && response.data?.result?.thumbnail) {
-            const thumbnailUrl = response.data.result.thumbnail;
-            console.log(`Thumbnail Fetch: Success for ${itemId}. URL: ${thumbnailUrl}`);
-            stmtUpdateThumbnailUrl.run(thumbnailUrl, Date.now(), itemId);
-        } else {
-            console.warn(`Thumbnail Fetch: Failed for ${itemId}. Status: ${response.data?.status}, Msg: ${response.data?.msg}`);
-        }
-    } catch (error: any) {
-        console.error(`Thumbnail Fetch: Error fetching thumbnail for ${itemId} (Filecode: ${filecode}):`, error.response?.data || error.message);
     }
 }
 

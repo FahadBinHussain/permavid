@@ -249,10 +249,12 @@ async function processQueue() {
   isProcessing = true;
   const startTime = Date.now();
   const downloadDir = getCurrentDownloadDir(); // <-- Get current dir for this process
+  const itemId = itemToProcess.id; // Get item ID for easier logging/use
+
   try {
     // Mark as downloading
-    stmtMarkDownloading.run('downloading', 'Download starting...', startTime, itemToProcess.id);
-    console.log(`Processing item from DB: ${itemToProcess.id} - ${itemToProcess.url} into ${downloadDir}`);
+    stmtMarkDownloading.run('downloading', 'Download starting...', startTime, itemId);
+    console.log(`Processing item from DB: ${itemId} - ${itemToProcess.url} into ${downloadDir}`);
 
     // Start the download (pass the specific downloadDir)
     const downloadPromise = downloadVideo(itemToProcess, downloadDir);
@@ -261,11 +263,11 @@ async function processQueue() {
     const cancellationCheckIntervalId = setInterval(() => {
       try {
         // Check if the item's status has changed to 'cancelled' during download
-        const currentItem = stmtGetItemById.get(itemToProcess!.id) as QueueItem | undefined;
-        
+        const currentItem = stmtGetItemById.get(itemId) as QueueItem | undefined;
+
         if (currentItem && currentItem.status === 'cancelled') {
-          console.log(`Item ${itemToProcess!.id} was cancelled during download. Terminating processes.`);
-          
+          console.log(`Item ${itemId} was cancelled during download. Terminating processes.`);
+
           // Kill all yt-dlp processes to be safe
           try {
             const { execSync } = require('child_process');
@@ -274,53 +276,93 @@ async function processQueue() {
           } catch (killError) {
             // It's okay if this fails
           }
-          
+
           // Clear the interval since we've detected cancellation
           clearInterval(cancellationCheckIntervalId);
         }
       } catch (checkError) {
-        console.error(`Error checking cancellation status for ${itemToProcess!.id}:`, checkError);
+        console.error(`Error checking cancellation status for ${itemId}:`, checkError);
       }
     }, 2000); // Check every 2 seconds
 
     // Wait for download to complete
     const result = await downloadPromise;
-    
+
     // Clear the cancellation check interval
     clearInterval(cancellationCheckIntervalId);
-    
+
     // Check the item's current status to make sure it hasn't been cancelled during download
-    const currentStatus = (stmtGetItemById.get(itemToProcess.id) as QueueItem | undefined)?.status;
-    
-    // Only update if the item isn't cancelled
+    const currentStatus = (stmtGetItemById.get(itemId) as QueueItem | undefined)?.status;
+
+    // Only update or proceed if the item isn't cancelled
     if (currentStatus !== 'cancelled') {
-      // Update based on result
-      stmtUpdateStatus.run(
-          result.success ? 'completed' : 'failed',
-          result.message ?? null,
-          result.title ?? itemToProcess.title ?? null, // Keep old title if new one is null
-          result.local_path ?? null,
-          result.info_json_path ?? null,
-          Date.now(), // updated_at
-          itemToProcess.id
-      );
-      console.log(`Queue item ${itemToProcess.id} update COMPLETE: Status=${result.success ? 'completed' : 'failed'}`);
+      if (result.success) {
+        console.log(`Download complete for item ${itemId}. Title: ${result.title}, Path: ${result.local_path}`);
+        const autoUploadEnabled = getSetting('auto_upload', 'false') === 'true';
+
+        if (autoUploadEnabled) {
+           console.log(`Auto-upload enabled. Triggering upload for item ${itemId}...`);
+           // Important: Store the necessary info before starting upload, as uploadToFilemoon needs it
+           // Update the item with title, path etc. before potentially calling upload
+           stmtUpdateStatus.run(
+              'completed', // Temporarily mark completed to save paths, upload will change it
+              result.message ?? 'Download complete, preparing auto-upload...',
+              result.title ?? itemToProcess.title ?? null,
+              result.local_path ?? null,
+              result.info_json_path ?? null,
+              Date.now(), // updated_at
+              itemId
+           );
+           // Now trigger the upload. Don't await here, let it run in the background.
+           // The upload function itself will update the status to 'uploading'/'failed'.
+           uploadToFilemoon(itemId).catch(uploadError => {
+                // Log error if the upload initiation fails, though uploadToFilemoon handles DB updates
+                console.error(`Error initiating auto-upload for ${itemId}:`, uploadError);
+           });
+        } else {
+          // Auto-upload is disabled, mark as completed
+          console.log(`Auto-upload disabled. Marking item ${itemId} as completed.`);
+          stmtUpdateStatus.run(
+              'completed',
+              result.message ?? null,
+              result.title ?? itemToProcess.title ?? null,
+              result.local_path ?? null,
+              result.info_json_path ?? null,
+              Date.now(), // updated_at
+              itemId
+          );
+          console.log(`Queue item ${itemId} update COMPLETE: Status=completed`);
+        }
+      } else {
+        // Download failed
+        console.log(`Download failed for item ${itemId}. Marking as failed.`);
+        stmtUpdateStatus.run(
+            'failed',
+            result.message ?? 'Download failed.',
+            result.title ?? itemToProcess.title ?? null, // Keep old title if available
+            null, // Clear local path on failure
+            itemToProcess.info_json_path, // Keep info json path if it exists? Or clear? Clear for now.
+            Date.now(), // updated_at
+            itemId
+        );
+         console.log(`Queue item ${itemId} update COMPLETE: Status=failed`);
+      }
     } else {
-      console.log(`Queue item ${itemToProcess.id} was cancelled, not updating to completed status`);
+      console.log(`Queue item ${itemId} was cancelled, not updating status after download attempt.`);
     }
 
   } catch (processingError: any) {
      // Catch errors during the update/processing itself
-     console.error(`CRITICAL: Error processing queue item ${itemToProcess.id}:`, processingError);
+     console.error(`CRITICAL: Error processing queue item ${itemId}:`, processingError);
 
      // Check if the item has been cancelled before marking as failed
-     const currentStatus = (stmtGetItemById.get(itemToProcess.id) as QueueItem | undefined)?.status;
+     const currentStatus = (stmtGetItemById.get(itemId) as QueueItem | undefined)?.status;
      if (currentStatus !== 'cancelled') {
        // Mark as failed in DB only if it wasn't cancelled
        try {
-           stmtUpdateStatus.run('failed', `Processing error: ${processingError.message}`, itemToProcess.title, null, null, Date.now(), itemToProcess.id);
+           stmtUpdateStatus.run('failed', `Processing error: ${processingError.message}`, itemToProcess.title, null, null, Date.now(), itemId);
        } catch (dbUpdateError) {
-           console.error(`Failed to mark item ${itemToProcess.id} as failed after processing error:`, dbUpdateError);
+           console.error(`Failed to mark item ${itemId} as failed after processing error:`, dbUpdateError);
        }
      }
   } finally {

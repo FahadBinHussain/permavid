@@ -40,4 +40,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Database Files
+*.sqlite
+*.sqlite-journal # Often created by SQLite
+*.sqlite-wal # Write-Ahead Log
+*.sqlite-shm # Shared Memory file
+
+# Downloads (already present but good to confirm)
 downloads/

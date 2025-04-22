@@ -73,6 +73,7 @@ interface AppSettings {
     filemoon_api_key?: string;
     download_directory?: string;
     delete_after_upload?: string; // Store as string 'true'/'false'
+    auto_upload?: string; // Store as string 'true'/'false'
 }
 
 // --- Add TypeScript definition for the exposed Electron API --- 
@@ -276,7 +277,8 @@ export default function Home() {
     const settingsToSave: AppSettings = {
         filemoon_api_key: settings.filemoon_api_key || '', // Send empty string if undefined
         download_directory: settings.download_directory || '',
-        delete_after_upload: settings.delete_after_upload === 'true' ? 'true' : 'false' // Ensure boolean-like string
+        delete_after_upload: settings.delete_after_upload === 'true' ? 'true' : 'false', // Ensure boolean-like string
+        auto_upload: settings.auto_upload === 'true' ? 'true' : 'false' // Ensure boolean-like string
     };
 
     try {
@@ -374,6 +376,19 @@ export default function Home() {
                     />
                     <label htmlFor="deleteAfterUpload" className="ml-2 block text-sm text-gray-900">
                         Delete local file after successful upload
+                    </label>
+                </div>
+                {/* Auto Upload */}
+                <div className="mb-6 flex items-center">
+                    <input
+                        id="autoUpload"
+                        type="checkbox"
+                        checked={settings.auto_upload === 'true'}
+                        onChange={(e) => setSettings(prev => ({ ...prev, auto_upload: e.target.checked ? 'true' : 'false' }))}
+                        className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="autoUpload" className="ml-2 block text-sm text-gray-900">
+                        Auto Upload
                     </label>
                 </div>
 
@@ -578,18 +593,8 @@ export default function Home() {
                          <p className="text-xs italic text-gray-400 truncate block mt-1">- {item.message}</p>
                       )}
                     </div>
-                     {/* Action Button Section (Upload Button) - Keep fixed size */}
-                     <div className="mt-2 sm:mt-0 flex-shrink-0 flex items-center"> {/* Use flex items-center here */} 
-                         {item.status === 'completed' && (
-                           <button 
-                              onClick={() => handleUpload(item.id)}
-                              disabled={uploadingItemId === item.id} // Disable button if this item is uploading
-                              className="px-2 py-1 text-xs font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              {uploadingItemId === item.id ? 'Uploading...' : 'Upload'}
-                            </button>
-                         )}
-                         {/* Placeholder for Cancel button to be added later */} 
+                     {/* Action Button Section - Keep fixed size */}
+                     <div className="mt-2 sm:mt-0 flex-shrink-0 flex items-center"> {/* Use flex items-center here */}
                          {/* --- Add Cancel Button --- */}
                          {(item.status === 'queued' || item.status === 'downloading') && (
                            <button
@@ -600,17 +605,27 @@ export default function Home() {
                              {cancellingItemId === item.id ? 'Cancelling...' : 'Cancel'}
                            </button>
                          )}
+                         {/* --- ADDED: Add Upload Button for 'completed' items --- */}
+                         {item.status === 'completed' && (
+                           <button
+                             onClick={() => handleUpload(item.id)}
+                             disabled={uploadingItemId === item.id} // Disable if this specific item is uploading
+                             className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                           >
+                             {uploadingItemId === item.id ? 'Uploading...' : 'Upload'}
+                           </button>
+                         )}
                          {/* Display Filemoon Link if available (uploaded, transferring, encoding, or encoded) */}
                          {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.filemoon_url && (
-                           <button 
+                           <button
                              onClick={() => handleOpenLink(item.filemoon_url)}
                              className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700"
                            >
                               View Link
                            </button>
                          )}
-                         {/* --- Add Restart Encoding Button --- */} 
-                         {item.status === 'failed' && item.filemoon_url && (
+                         {/* --- Add Restart Encoding Button --- */}
+                         {item.status === 'failed' && item.filemoon_url && ( // Only show restart if it failed *after* upload (has filemoon_url)
                            <button
                              onClick={() => handleRestartEncoding(item.id)}
                              disabled={restartingItemId === item.id}
@@ -622,7 +637,7 @@ export default function Home() {
                          {/* Display Encoding Progress (if applicable) - Restore */}
                          {item.status === 'encoding' && (
                            <div className="ml-2 w-24 bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 flex items-center">
-                             <div 
+                             <div
                                className="bg-cyan-600 h-2.5 rounded-full"
                                style={{ width: `${item.encoding_progress ?? 0}%` }}
                              >

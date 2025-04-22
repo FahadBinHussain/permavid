@@ -75,6 +75,15 @@ interface AppSettings {
     delete_after_upload?: string; // Store as string 'true'/'false'
 }
 
+// --- Add TypeScript definition for the exposed Electron API --- 
+declare global {
+    interface Window {
+        electronAPI?: {
+            openExternalLink: (url: string) => Promise<{ success: boolean; error?: string }>;
+        };
+    }
+}
+
 export default function Home() {
   const [url, setUrl] = useState('');
   const [message, setMessage] = useState('');
@@ -288,6 +297,30 @@ export default function Home() {
         setError(`Failed to save settings: ${saveError.message}`);
     } finally {
         setIsSavingSettings(false);
+    }
+  };
+
+  // --- New function to handle opening links externally via Electron --- 
+  const handleOpenLink = async (filecode: string | null | undefined) => {
+    console.log('handleOpenLink called with filecode:', filecode);
+    if (!filecode) return;
+    const url = `https://filemoon.sx/d/${filecode}`;
+    if (window.electronAPI) {
+      console.log(`Attempting to open link via Electron: ${url}`);
+      try {
+        const result = await window.electronAPI.openExternalLink(url);
+        if (!result.success) {
+          console.error('Failed to open link via Electron:', result.error);
+          setError('Could not open link in external browser.');
+        }
+      } catch (err) {
+          console.error('Error calling electronAPI.openExternalLink:', err);
+          setError('Error interacting with Electron to open link.');
+      }
+    } else {
+      // Fallback for non-Electron environments (optional, unlikely for this app)
+      console.warn('Electron API not found, opening link directly (may open in app window).');
+      window.open(url, '_blank');
     }
   };
 
@@ -569,14 +602,12 @@ export default function Home() {
                          )}
                          {/* Display Filemoon Link if available (uploaded, transferring, encoding, or encoded) */}
                          {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.filemoon_url && (
-                           <a 
-                             href={`https://filemoon.sx/d/${item.filemoon_url}`}
-                             target="_blank" 
-                             rel="noopener noreferrer"
+                           <button 
+                             onClick={() => handleOpenLink(item.filemoon_url)}
                              className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700"
                            >
-                             View Link
-                           </a>
+                              View Link
+                           </button>
                          )}
                          {/* --- Add Restart Encoding Button --- */} 
                          {item.status === 'failed' && item.filemoon_url && (

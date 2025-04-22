@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import path from 'path';
 // import isDev from 'electron-is-dev'; // <-- Remove static import
 
@@ -33,6 +33,21 @@ async function createWindow() {
     : `file://${path.join(__dirname, '../out/index.html')}`; // Path to the production build
 
   mainWindow.loadURL(startUrl);
+
+  // --- Intercept New Window Requests --- 
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // Check if the URL is for Filemoon (or could be more specific)
+    if (url.startsWith('https://filemoon.sx/') || url.startsWith('http://filemoon.sx/')) {
+      console.log(`Intercepted window open request for: ${url}. Opening externally.`);
+      // Open the URL in the default system browser
+      shell.openExternal(url);
+      // Prevent Electron from opening a new window
+      return { action: 'deny' };
+    }
+    // Allow other URLs to open new Electron windows if needed (or deny all)
+    console.log(`Allowing window open request for: ${url}`);
+    return { action: 'allow' }; // Or return { action: 'deny' }; to prevent all new windows
+  });
 
   // Open the DevTools automatically if in development
   if (isDev) {
@@ -72,12 +87,19 @@ app.on('activate', () => {
   }
 });
 
-// --- IPC Handlers (Example - can be added later if needed) ---
-// Example: Handle a message from the renderer process
-// ipcMain.handle('some-action', async (event, arg) => {
-//   // Do something in the main process
-//   return 'result from main';
-// });
+// --- IPC Handlers --- 
+// Handle the message from the renderer to open a link externally
+ipcMain.handle('open-external-link', async (event, url) => {
+  console.log(`IPC Handler 'open-external-link' received URL: ${url}`); // <-- Add log here
+  try {
+    await shell.openExternal(url);
+    console.log(`IPC: Opened external link: ${url}`);
+    return { success: true };
+  } catch (error) {
+    console.error(`Failed to open external link ${url}:`, error);
+    return { success: false, error: (error as Error).message };
+  }
+});
 
 // In this file you can include the rest of your app's specific main process
 // code. You can also put them in separate files and require them here. 

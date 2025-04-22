@@ -4,11 +4,11 @@
 // It has the same sandbox as a Chrome extension.
 // We can selectively expose APIs to the renderer process here if needed.
 
-// const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
 // Example: Expose a function to the renderer process
-// contextBridge.exposeInMainWorld('electronAPI', {
-//   doSomething: (arg) => ipcRenderer.invoke('some-action', arg),
-// });
+contextBridge.exposeInMainWorld('electronAPI', {
+  openExternalLink: (url: string) => ipcRenderer.invoke('open-external-link', url)
+});
 
-console.log('Preload script loaded.'); 
+console.log('Preload script loaded and electronAPI exposed.'); 

@@ -6,7 +6,7 @@ export async function POST(
   request: Request,
   { params }: { params: { id: string } }
 ) {
-  const itemId = params.id;
+  const { id: itemId } = params;
 
   if (!itemId) {
     return NextResponse.json({ error: 'Item ID is required' }, { status: 400 });

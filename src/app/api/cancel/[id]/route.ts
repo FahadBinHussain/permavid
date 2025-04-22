@@ -4,9 +4,9 @@ import { cancelItem } from '@/lib/queue';
 // DELETE request to cancel a specific item ID
 export async function DELETE(
   request: NextRequest,
-  context: { params: { id: string } }
+  { params }: { params: { id: string } }
 ) {
-  const { id: itemId } = await context.params;
+  const { id: itemId } = params;
 
   if (!itemId) {
     return NextResponse.json({ error: 'Item ID is required' }, { status: 400 });

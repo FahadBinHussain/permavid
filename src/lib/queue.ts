@@ -1120,6 +1120,46 @@ setInterval(pollEncodingStatus, POLLING_INTERVAL);
 // Run once on startup after a short delay
 setTimeout(pollEncodingStatus, 5000);
 
+// --- New Retry Function --- 
+
+export function retryFailedDownloadOrUpload(itemId: string): { success: boolean; message: string } {
+    let item: QueueItem | undefined;
+    try {
+        item = stmtGetItemById.get(itemId) as QueueItem | undefined;
+    } catch (dbError: any) {
+        console.error(`Retry Failed: DB error retrieving item ${itemId}:`, dbError);
+        return { success: false, message: `Database error retrieving item: ${dbError.message}` };
+    }
+
+    if (!item) {
+        return { success: false, message: `Retry failed: Item ${itemId} not found.` };
+    }
+
+    // Only allow retry if failed before/during upload (no filemoon_url)
+    if (item.status !== 'failed' || item.filemoon_url) {
+        return { success: false, message: `Retry failed: Item ${itemId} is not in a retryable failed state (status: ${item.status}, has filemoon_url: ${!!item.filemoon_url}).` };
+    }
+
+    try {
+        // Reset status to queued, clear message, update timestamp
+        const stmtRetry = db.prepare('UPDATE queue SET status = ?, message = ?, updated_at = ? WHERE id = ?');
+        const result = stmtRetry.run('queued', 'Retrying...', Date.now(), itemId);
+
+        if (result.changes > 0) {
+            console.log(`Retry Queued: Item ${itemId} status reset to 'queued'.`);
+            triggerProcessing(); // Signal the queue processor to check for work
+            return { success: true, message: 'Item re-queued for processing.' };
+        } else {
+            // Should not happen if item was found, but handle defensively
+            console.warn(`Retry Failed: No changes made to DB for item ${itemId}.`);
+            return { success: false, message: 'Retry failed: Could not update item status.' };
+        }
+    } catch (updateError: any) {
+        console.error(`Retry Failed: DB error updating item ${itemId} to queued:`, updateError);
+        return { success: false, message: `Database error during retry: ${updateError.message}` };
+    }
+}
+
 // --- New Restart Encoding Function (Use settings) ---
 
 export async function restartFilemoonEncoding(itemId: string): Promise<{ success: boolean; message: string }> {
@@ -1151,29 +1191,72 @@ export async function restartFilemoonEncoding(itemId: string): Promise<{ success
   const filecode = item.filemoon_url;
 
   try {
-    const apiUrl = `https://filemoonapi.com/api/encoding/restart?key=${apiKey}&file_code=${filecode}`;
-    console.log(`Restart Encoding: Calling API for item ${itemId} (Filecode: ${filecode}) -> ${apiUrl}`);
-    const response = await axios.get(apiUrl, { timeout: 10000 }); // 10s timeout
-
-    if (response.data?.status !== 200) {
-      throw new Error(`Filemoon API returned non-200 status: ${response.data?.status} - ${response.data?.msg}`);
+    // --- Check Filemoon's actual status first using /api/file/info --- 
+    const fileInfoUrl = `https://filemoonapi.com/api/file/info?key=${apiKey}&file_code=${filecode}`;
+    console.log(`Restart/Check Status: Calling API for item ${itemId} (Filecode: ${filecode}) -> ${fileInfoUrl}`);
+    let fileInfoResponse;
+    try {
+        fileInfoResponse = await axios.get(fileInfoUrl, { timeout: 10000 }); // 10s timeout
+    } catch (infoError: any) {
+        console.error(`Restart/Check Status Failed: API error fetching info for ${filecode}:`, infoError.response?.data || infoError.message || infoError);
+        let infoErrorMessage = 'Failed to get current file status from Filemoon.';
+        if (axios.isAxiosError(infoError) && infoError.response?.status === 404) { // Check outer status first
+            infoErrorMessage = 'File info endpoint likely not found or issue with API key/request.';
+        }
+        // Add specific check if the response data indicates the file itself wasn't found (often still a 200 overall)
+        else if (infoError.response?.data?.msg?.includes('Not Found')) { 
+             infoErrorMessage = 'File not found on Filemoon (maybe deleted?).';
+        }
+        return { success: false, message: infoErrorMessage };
     }
 
-    console.log(`Restart Encoding: API success for item ${itemId}. Msg: ${response.data?.msg}`);
+    // Validate the overall response structure
+    if (fileInfoResponse.data?.status !== 200 || !Array.isArray(fileInfoResponse.data?.result)) {
+        console.warn(`Restart/Check Status Warning: Invalid response structure from file/info for ${filecode}. Status: ${fileInfoResponse.data?.status}, Msg: ${fileInfoResponse.data?.msg}`);
+        return { success: false, message: 'Could not verify current file status on Filemoon (invalid response).' };
+    }
 
-    // If successful, update local status back to 'uploaded' to allow polling again
-    // Reset progress and update message
-    stmtUpdateEncodingStatus.run(
-      'uploaded', // Reset status to allow polling again
-      null,       // Reset progress
-      'Encoding restart requested.', // New message
-      Date.now(),
-      item.id
-    );
-    console.log(`Restart Encoding: Updated item ${itemId} status to 'uploaded' in DB.`);
+    // Find the specific result for our filecode in the array
+    const fileResult = fileInfoResponse.data.result.find((r: any) => r.file_code === filecode);
 
-    return { success: true, message: response.data?.msg || 'Encoding restart request successful.' };
+    if (!fileResult) {
+         console.warn(`Restart/Check Status Warning: Filecode ${filecode} not found in file/info result array.`);
+        return { success: false, message: `Filecode ${filecode} not found in Filemoon's response.` };
+    }
+    
+    const fileResultStatus = fileResult.status;
+    const canPlay = fileResult.canplay; // Should be 1 if playable
+    console.log(`Restart/Check Status: Filemoon result status for ${filecode} is '${fileResultStatus}', canplay: ${canPlay}`);
 
+    // Check based on the documentation provided
+    if (fileResultStatus === 404) {
+        console.log(`Restart/Check Status: File ${filecode} has status 404 in results. Not found on Filemoon.`);
+        // Update local status? Maybe just inform user.
+        // Optionally, update local status to failed with a specific message
+        // stmtUpdateEncodingStatus.run('failed', null, 'File not found on Filemoon.', Date.now(), item.id);
+        return { success: false, message: 'File not found on Filemoon (maybe deleted?).' };
+    }
+
+    if (fileResultStatus === 200 && canPlay === 1) {
+        console.log(`Restart/Check Status: File ${filecode} is playable on Filemoon. Updating local status to encoded.`);
+        stmtUpdateEncodingStatus.run(
+            'encoded', // Set to encoded
+            100,       // Assume 100% progress
+            'File processing confirmed complete via Filemoon API.', // New message
+            Date.now(),
+            item.id
+        );
+        // Fetch queue needed on client side after this
+        return { success: true, message: 'File already processed successfully. Local status updated.' };
+    }
+
+    // Handle other cases (e.g., status 200 but canplay != 1, or other statuses)
+    console.warn(`Restart/Check Status: Cannot determine definitive status for ${filecode}. Result Status: ${fileResultStatus}, CanPlay: ${canPlay}.`);
+    return { success: false, message: `File status on Filemoon is unclear (Status: ${fileResultStatus}, CanPlay: ${canPlay}). Cannot automatically update or restart.` };
+
+    // --- REMOVED THE LOGIC TO CALL /api/encoding/restart --- 
+    // We cannot reliably determine if the file is in an 'ERROR' state solely from /api/file/info based on docs.
+    
   } catch (error: any) {
     console.error(`Restart Encoding Failed: API call error for item ${itemId} (Filecode: ${filecode}):`, error.response?.data || error.message || error);
     let errorMessage = 'Failed to request encoding restart.';

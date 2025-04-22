@@ -95,6 +95,7 @@ export default function Home() {
   const [uploadingItemId, setUploadingItemId] = useState<string | null>(null); // Track which item is uploading
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null); // Track which item is cancelling
   const [restartingItemId, setRestartingItemId] = useState<string | null>(null); // Track which item is restarting encoding
+  const [retryingItemId, setRetryingItemId] = useState<string | null>(null); // Track which item is retrying failed download/upload
 
   // --- Settings State ---
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -242,6 +243,30 @@ export default function Home() {
     }
   };
 
+  // --- New function to handle general retry for failed items --- 
+  const handleRetry = async (itemId: string) => {
+    setRetryingItemId(itemId);
+    setMessage('');
+    setError('');
+    try {
+      const response = await fetch(`/api/retry/${itemId}`, {
+        method: 'POST',
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP error! status: ${response.status}`);
+      }
+      setMessage(data.message || `Retry request sent for item ${itemId}.`);
+      fetchQueue(); // Refresh queue to show status change (back to queued)
+    } catch (retryError: any) {
+      console.error(`Error retrying item ${itemId}:`, retryError);
+      setError(`Failed to retry item ${itemId}: ${retryError.message}`);
+      fetchQueue(); // Refresh queue view anyway
+    } finally {
+      setRetryingItemId(null);
+    }
+  };
+
   // --- New function to handle restarting encoding ---
   const handleRestartEncoding = async (itemId: string) => {
     setRestartingItemId(itemId);
@@ -329,7 +354,6 @@ export default function Home() {
   // *** ADDED: Filter the queue for display ***
   const activeQueueItems = queue.filter(item => 
     item.status !== 'encoded' && 
-    item.status !== 'failed' && 
     item.status !== 'cancelled'
   );
 
@@ -622,6 +646,16 @@ export default function Home() {
                              className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700"
                            >
                               View Link
+                           </button>
+                         )}
+                         {/* --- Add General Retry Button --- */}
+                         {item.status === 'failed' && !item.filemoon_url && ( // Only show if failed *before* upload
+                           <button
+                             onClick={() => handleRetry(item.id)}
+                             disabled={retryingItemId === item.id}
+                             className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-yellow-500 hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                           >
+                             {retryingItemId === item.id ? 'Retrying...' : 'Retry'}
                            </button>
                          )}
                          {/* --- Add Restart Encoding Button --- */}

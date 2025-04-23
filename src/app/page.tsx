@@ -53,6 +53,11 @@ const icons: { [key: string]: React.JSX.Element } = {
       <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
     </svg>
   ),
+  all: (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+       <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+  ),
 };
 
 // Define the structure for a queue item (matching backend)
@@ -65,6 +70,7 @@ interface QueueItem {
   filemoon_url?: string; // Stores the filecode
   encoding_progress?: number | null; // Add encoding progress field
   thumbnail_url?: string; // Add thumbnail URL
+  added_at?: number; // Make sure added_at is available for sorting
   updated_at?: number; // Ensure updated_at is here if needed by UI (e.g. for sorting, though not currently used)
 }
 
@@ -104,6 +110,13 @@ export default function Home() {
 
   // --- UI State ---
   const [showClearDropdown, setShowClearDropdown] = useState(false);
+  // --- Filtering and Sorting State ---
+  type FilterStatus = QueueItem['status'] | 'all';
+  type SortKey = 'added_at_desc' | 'added_at_asc' | 'title_asc' | 'title_desc' | 'status';
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
+  const [sortKey, setSortKey] = useState<SortKey>('added_at_desc');
+  const [showFilterDropdown, setShowFilterDropdown] = useState(false);
+  const [showSortDropdown, setShowSortDropdown] = useState(false);
 
   // --- Fetch Queue and Settings ---
   const fetchQueue = useCallback(async () => {
@@ -351,11 +364,28 @@ export default function Home() {
     }
   };
 
-  // *** ADDED: Filter the queue for display ***
-  const activeQueueItems = queue.filter(item => 
-    item.status !== 'encoded' && 
-    item.status !== 'cancelled'
-  );
+  // *** ADDED: Filter and Sort the queue for display ***
+  const displayedQueueItems = queue
+    .filter(item => {
+      if (filterStatus === 'all') return true;
+      return item.status === filterStatus;
+    })
+    .sort((a, b) => {
+      switch (sortKey) {
+        case 'added_at_asc':
+          return (a.added_at || 0) - (b.added_at || 0);
+        case 'added_at_desc':
+          return (b.added_at || 0) - (a.added_at || 0);
+        case 'title_asc':
+          return (a.title || a.url || '').localeCompare(b.title || b.url || '');
+        case 'title_desc':
+          return (b.title || b.url || '').localeCompare(a.title || a.url || '');
+        case 'status':
+          return (a.status || '').localeCompare(b.status || '');
+        default:
+          return 0; // Should not happen
+      }
+    });
 
   // --- Settings Modal Component (Simplified Inline) ---
   const SettingsModal = () => (
@@ -495,77 +525,133 @@ export default function Home() {
         {/* Queue Display */} 
         <div className="w-full max-w-4xl">
           <div className="flex justify-between items-center mb-4">
-             {/* *** UPDATED: Use filtered list length for display *** */}
-             <h2 className="text-2xl font-semibold">Download Queue ({activeQueueItems.length} items)</h2>
-             {/* --- Consolidated Clear Button Dropdown --- */}
-             <div className="relative">
-                 <button
-                     onClick={() => setShowClearDropdown(!showClearDropdown)}
-                     disabled={isClearing}
-                     className="px-3 py-1 text-xs font-medium rounded-md text-white bg-gray-500 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
-                 >
-                     Clear...
-                     <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                 </button>
-
-                 {/* Dropdown Menu */} 
-                 {showClearDropdown && (
-                     <div 
-                        className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-10"
-                        onMouseLeave={() => setShowClearDropdown(false)} // Close on mouse leave
+             {/* *** UPDATED: Use filtered/sorted list length for display *** */}
+             <h2 className="text-2xl font-semibold">Download Queue ({displayedQueueItems.length} items)</h2>
+             {/* --- Queue Controls (Filter, Sort, Clear) --- */}
+             <div className="flex items-center space-x-2">
+                {/* --- Filter Dropdown --- */}
+                <div className="relative">
+                    <button
+                        onClick={() => setShowFilterDropdown(!showFilterDropdown)}
+                        className="px-3 py-1 text-xs font-medium rounded-md text-white bg-gray-500 hover:bg-gray-600 flex items-center"
+                    >
+                        Filter: {filterStatus}
+                        <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </button>
+                    {showFilterDropdown && (
+                        <div 
+                            className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20" // Increase z-index
+                            onMouseLeave={() => setShowFilterDropdown(false)}
+                        >
+                            <div className="py-1" role="menu" aria-orientation="vertical">
+                                {(['all', 'queued', 'downloading', 'completed', 'uploading', 'transferring', 'encoding', 'encoded', 'failed', 'cancelled'] as FilterStatus[]).map(status => (
+                                    <button
+                                        key={status}
+                                        onClick={() => { setFilterStatus(status); setShowFilterDropdown(false); }}
+                                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center"
+                                        role="menuitem"
+                                    >
+                                        {icons[status] || null} {status.charAt(0).toUpperCase() + status.slice(1)}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+                {/* --- Sort Dropdown --- */}
+                <div className="relative">
+                     <button
+                         onClick={() => setShowSortDropdown(!showSortDropdown)}
+                         className="px-3 py-1 text-xs font-medium rounded-md text-white bg-gray-500 hover:bg-gray-600 flex items-center"
                      >
-                         <div className="py-1" role="menu" aria-orientation="vertical" aria-labelledby="options-menu">
-                             <button
-                                 onClick={() => { handleClearQueue('completed'); setShowClearDropdown(false); }}
-                                 // *** NOTE: disabled check uses the FULL `queue` state ***
-                                 disabled={!queue.some(item => item.status === 'completed')} // Keep using full queue
-                                 className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                                 role="menuitem"
-                             >
-                                 Clear Completed
-                             </button>
-                             <button
-                                 onClick={() => { handleClearQueue('failed'); setShowClearDropdown(false); }}
-                                 // *** NOTE: disabled check uses the FULL `queue` state ***
-                                 disabled={!queue.some(item => item.status === 'failed' || item.status === 'uploading')} // Keep using full queue
-                                 className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                                 role="menuitem"
-                             >
-                                 Clear Failed/Uploading
-                             </button>
-                             <button
-                                 onClick={() => { handleClearQueue('cancelled'); setShowClearDropdown(false); }}
-                                 // *** NOTE: disabled check uses the FULL `queue` state ***
-                                 disabled={!queue.some(item => item.status === 'cancelled')} // Keep using full queue
-                                 className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                                 role="menuitem"
-                             >
-                                 Clear Cancelled
-                             </button>
-                             <button
-                                 onClick={() => { handleClearQueue('finished'); setShowClearDropdown(false); }}
-                                 // *** NOTE: disabled check uses the FULL `queue` state ***
-                                 disabled={!queue.some(item => item.status === 'completed' || item.status === 'failed')} // Keep using full queue
-                                 className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                                 role="menuitem"
-                             >
-                                 Clear All Finished
-                             </button>
+                         Sort By...
+                         <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                     </button>
+                     {showSortDropdown && (
+                         <div
+                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20" // Increase z-index
+                             onMouseLeave={() => setShowSortDropdown(false)}
+                         >
+                             <div className="py-1" role="menu" aria-orientation="vertical">
+                                 <button onClick={() => { setSortKey('added_at_desc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'added_at_desc' ? 'font-bold' : ''}`} role="menuitem">Date Added (Newest)</button>
+                                 <button onClick={() => { setSortKey('added_at_asc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'added_at_asc' ? 'font-bold' : ''}`} role="menuitem">Date Added (Oldest)</button>
+                                 <button onClick={() => { setSortKey('title_asc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'title_asc' ? 'font-bold' : ''}`} role="menuitem">Title (A-Z)</button>
+                                 <button onClick={() => { setSortKey('title_desc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'title_desc' ? 'font-bold' : ''}`} role="menuitem">Title (Z-A)</button>
+                                 <button onClick={() => { setSortKey('status'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'status' ? 'font-bold' : ''}`} role="menuitem">Status</button>
+                             </div>
                          </div>
-                     </div>
-                 )}
+                     )}
+                 </div>
+                 {/* --- Clear Button Dropdown --- */}
+                 <div className="relative">
+                     <button
+                         onClick={() => setShowClearDropdown(!showClearDropdown)}
+                         disabled={isClearing}
+                         className="px-3 py-1 text-xs font-medium rounded-md text-white bg-gray-500 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                     >
+                         Clear...
+                         <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                     </button>
+
+                     {/* Dropdown Menu */} 
+                     {showClearDropdown && (
+                         <div 
+                            className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-10"
+                            onMouseLeave={() => setShowClearDropdown(false)} // Close on mouse leave
+                         >
+                             <div className="py-1" role="menu" aria-orientation="vertical" aria-labelledby="options-menu">
+                                 <button
+                                     onClick={() => { handleClearQueue('completed'); setShowClearDropdown(false); }}
+                                     // *** NOTE: disabled check uses the FULL `queue` state ***
+                                     disabled={!queue.some(item => item.status === 'completed')} // Keep using full queue
+                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                     role="menuitem"
+                                 >
+                                     Clear Completed
+                                 </button>
+                                 <button
+                                     onClick={() => { handleClearQueue('failed'); setShowClearDropdown(false); }}
+                                     // *** NOTE: disabled check uses the FULL `queue` state ***
+                                     disabled={!queue.some(item => item.status === 'failed' || item.status === 'uploading')} // Keep using full queue
+                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                     role="menuitem"
+                                 >
+                                     Clear Failed/Uploading
+                                 </button>
+                                 <button
+                                     onClick={() => { handleClearQueue('cancelled'); setShowClearDropdown(false); }}
+                                     // *** NOTE: disabled check uses the FULL `queue` state ***
+                                     disabled={!queue.some(item => item.status === 'cancelled')} // Keep using full queue
+                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                     role="menuitem"
+                                 >
+                                     Clear Cancelled
+                                 </button>
+                                 <button
+                                     onClick={() => { handleClearQueue('finished'); setShowClearDropdown(false); }}
+                                     // *** NOTE: disabled check uses the FULL `queue` state ***
+                                     disabled={!queue.some(item => item.status === 'completed' || item.status === 'failed')} // Keep using full queue
+                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                                     role="menuitem"
+                                 >
+                                     Clear All Finished
+                                 </button>
+                             </div>
+                         </div>
+                     )}
+                 </div>
              </div>
           </div>
 
           <div className="bg-white shadow overflow-hidden sm:rounded-md">
             <ul role="list" className="divide-y divide-gray-200">
-              {/* *** UPDATED: Use filtered list for display checks and mapping *** */}
-              {activeQueueItems.length === 0 && (
+              {/* *** UPDATED: Use filtered/sorted list for display checks and mapping *** */}
+              {displayedQueueItems.length === 0 && (
                 <li className="px-4 py-4 text-center text-gray-500">
-                  Queue is empty.
+                  {filterStatus === 'all' ? 'Queue is empty.' : `No items match filter "${filterStatus}".`}
                 </li>
               )}
-              {activeQueueItems.map((item) => (
+              {displayedQueueItems.map((item) => (
                 <li key={item.id} className="px-4 py-4 sm:px-6">
                   {/* Top Row: Title and Status Badge */}
                   <div className="flex items-center justify-between space-x-2">

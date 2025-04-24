@@ -157,6 +157,9 @@ const stmtGetItemsToCheck = db.prepare(
     "SELECT id, filemoon_url, status, encoding_progress, updated_at FROM queue WHERE status = 'transferring' OR status = 'encoding'"
 );
 
+// Add this near the other prepared statement definitions
+const stmtGetItemByUrl = db.prepare('SELECT id, status FROM queue WHERE url = ?');
+
 // --- Queue Item Type (Matches DB) ---
 export interface QueueItem {
     id: string;
@@ -187,8 +190,47 @@ export function addToQueue(url: string): { success: boolean; message: string; it
       const newItem = db.prepare('SELECT * FROM queue WHERE id = ?').get(newItemId) as QueueItem;
       return { success: true, message: 'URL added to queue', item: newItem };
     } else {
-       console.log(`URL already exists in queue: ${url}`);
-       return { success: false, message: 'URL already exists in the queue.' };
+      // URL Conflict - Check the status of the existing item
+      console.log(`URL already exists in queue, checking status: ${url}`);
+      const existingItem = stmtGetItemByUrl.get(url) as { id: string; status: QueueItem['status'] } | undefined;
+
+      let message = 'URL already exists in the queue.'; // Default message
+
+      if (existingItem) {
+          switch (existingItem.status) {
+              case 'completed':
+              case 'uploaded':
+              case 'transferring':
+              case 'encoding':
+              case 'encoded':
+                  message = 'This URL has already been processed or archived.';
+                  break;
+              case 'downloading':
+              case 'uploading': // Added uploading here too
+                  message = 'This URL is currently being processed.';
+                  break;
+              case 'queued':
+                  message = 'This URL is already waiting in the queue.';
+                  break;
+              case 'failed':
+                  message = 'This URL failed previously. You might want to retry it from the queue.';
+                  break;
+              case 'cancelled':
+                  message = 'This URL was cancelled previously.';
+                  break;
+              default:
+                  message = `This URL already exists with status: ${existingItem.status}.`;
+                  break;
+          }
+          console.log(`Existing item found with status '${existingItem.status}'. Returning message: "${message}"`);
+          // You could potentially return existingItem.id and existingItem.status here too
+          // return { success: false, message: message, existingStatus: existingItem.status, existingId: existingItem.id };
+          return { success: false, message: message }; // Keep it simple for now
+      } else {
+         // Should not happen if ON CONFLICT worked, but handle defensively
+         console.warn(`URL conflict occurred for ${url}, but failed to retrieve the existing item details.`);
+         return { success: false, message: 'URL already exists, but could not retrieve its status.' };
+      }
     }
   } catch (error: any) {
     console.error(`Failed to add URL to queue DB: ${url}`, error);

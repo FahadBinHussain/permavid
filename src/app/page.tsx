@@ -91,6 +91,169 @@ declare global {
     }
 }
 
+// --- Helper Component for Queue Item --- 
+interface QueueItemProps {
+  item: QueueItem;
+  uploadingItemId: string | null;
+  cancellingItemId: string | null;
+  restartingItemId: string | null;
+  retryingItemId: string | null;
+  onUpload: (id: string) => void;
+  onCancel: (id: string) => void;
+  onRetry: (id: string) => void;
+  onRestartEncoding: (id: string) => void;
+  onOpenLink: (filecode: string | null | undefined) => void;
+}
+
+const QueueListItem: React.FC<QueueItemProps> = ({ 
+  item, 
+  uploadingItemId, 
+  cancellingItemId, 
+  restartingItemId, 
+  retryingItemId, 
+  onUpload,
+  onCancel,
+  onRetry,
+  onRestartEncoding,
+  onOpenLink
+}) => {
+  return (
+    <li key={item.id} className="px-4 py-5 sm:px-6"> {/* Increased py */}
+      <div className="flex items-start space-x-4"> {/* Use items-start for alignment with thumbnail */} 
+          {/* Thumbnail (Optional) */}
+          {item.thumbnail_url && (
+            <div className="flex-shrink-0">
+              <img 
+                className="h-12 w-20 rounded object-cover" // Adjust size as needed
+                src={item.thumbnail_url} 
+                alt="Video thumbnail"
+                onError={(e) => { e.currentTarget.style.display = 'none'; }} // Hide on error
+              />
+            </div>
+          )}
+
+          {/* Main Content Area */}
+          <div className="flex-1 min-w-0"> 
+              {/* Top Row: Title and Status Badge */}
+              <div className="flex items-center justify-between space-x-2 mb-1"> {/* Added mb-1 */} 
+                {/* Make title take remaining space and truncate */}
+                <div className="text-base font-semibold text-indigo-700 truncate flex-1 min-w-0" title={item.title || item.url}> {/* Increased size/weight, changed color */} 
+                  {item.title || item.url}
+                </div>
+                {/* Keep status badge fixed size */} 
+                <div className="ml-2 flex-shrink-0 flex">
+                  <p className={`px-2 py-0.5 inline-flex items-center text-xs leading-5 font-semibold rounded-full ${ // Added py-0.5 and items-center
+                    item.status === 'completed' ? 'bg-green-100 text-green-800' : 
+                    item.status === 'failed' ? 'bg-red-100 text-red-800' : 
+                    item.status === 'downloading' ? 'bg-yellow-100 text-yellow-800' : 
+                    item.status === 'uploading' ? 'bg-blue-100 text-blue-800' :
+                    item.status === 'cancelled' ? 'bg-gray-100 text-gray-800' :
+                    item.status === 'transferring' ? 'bg-blue-100 text-blue-800' : // Keep color for transferring
+                    item.status === 'encoding' ? 'bg-cyan-100 text-cyan-800' :
+                    item.status === 'encoded' ? 'bg-indigo-100 text-indigo-800' : // More distinct color for encoded
+                    'bg-purple-100 text-purple-800' // Default for queued
+                  }`}> 
+                    {icons[item.status] || null} {/* Add icon here */} 
+                    {item.status}
+                  </p>
+                </div>
+              </div>
+              {/* Bottom Row: URL/Message and Action Button */} 
+              <div className="mt-2 sm:flex sm:justify-between sm:items-center">
+                {/* Info Section (URL/Message) - Allow shrinking and truncating */} 
+                <div className="sm:flex-1 min-w-0 mr-4"> {/* Add min-w-0 here */} 
+                  {/* Display URL when title exists */} 
+                  {item.title && <p className="text-sm text-gray-500 truncate block">{item.url}</p>} 
+
+                  {/* Display Message or Progress */} 
+                  {item.status === 'downloading' && item.message?.startsWith('Downloading:') &&
+                    <div className="flex items-center mt-1"> 
+                      <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mr-2"> 
+                        <div 
+                          className="bg-yellow-500 h-2.5 rounded-full" 
+                          style={{ width: `${item.message.match(/(\d+)%/)?.[1] ?? 0}%` }} 
+                        ></div> 
+                      </div> 
+                      <span className="text-xs text-yellow-700 whitespace-nowrap"> 
+                        {item.message.match(/(\d+)%/)?.[0] ?? '0%'} 
+                      </span> 
+                    </div> 
+                  } 
+                  {/* Show standard message for other states or if download message is not progress */} 
+                  {(!(item.status === 'downloading' && item.message?.startsWith('Downloading:')) && item.message) && ( 
+                     <p className="text-xs italic text-gray-400 truncate block mt-1">- {item.message}</p> 
+                  )} 
+                </div> 
+                 {/* Action Button Section - Keep fixed size */} 
+                 <div className="mt-2 sm:mt-0 flex-shrink-0 flex items-center space-x-2"> {/* Added space-x-2 */} 
+                     {/* --- Add Cancel Button --- */} 
+                     {(item.status === 'queued' || item.status === 'downloading') && ( 
+                       <button 
+                         onClick={() => onCancel(item.id)} 
+                         disabled={cancellingItemId === item.id} // Disable button if this item is cancelling 
+                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed" 
+                       > 
+                         {cancellingItemId === item.id ? 'Cancelling...' : 'Cancel'} 
+                       </button> 
+                     )} 
+                     {/* --- ADDED: Add Upload Button for 'completed' items --- */} 
+                     {item.status === 'completed' && ( 
+                       <button 
+                         onClick={() => onUpload(item.id)} 
+                         disabled={uploadingItemId === item.id} // Disable if this specific item is uploading 
+                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" 
+                       > 
+                         {uploadingItemId === item.id ? 'Uploading...' : 'Upload'} 
+                       </button> 
+                     )} 
+                     {/* Display Filemoon Link if available (uploaded, transferring, encoding, or encoded) */} 
+                     {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.filemoon_url && ( 
+                       <button 
+                         onClick={() => onOpenLink(item.filemoon_url)} 
+                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700" 
+                       > 
+                          View Link 
+                       </button> 
+                     )} 
+                     {/* --- Add General Retry Button --- */} 
+                     {item.status === 'failed' && !item.filemoon_url && ( // Only show if failed *before* upload 
+                       <button 
+                         onClick={() => onRetry(item.id)} 
+                         disabled={retryingItemId === item.id} 
+                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-yellow-500 hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed" 
+                       > 
+                         {retryingItemId === item.id ? 'Retrying...' : 'Retry'} 
+                       </button> 
+                     )} 
+                     {/* --- Add Restart Encoding Button --- */} 
+                     {item.status === 'failed' && item.filemoon_url && ( // Only show restart if it failed *after* upload (has filemoon_url) 
+                       <button 
+                         onClick={() => onRestartEncoding(item.id)} 
+                         disabled={restartingItemId === item.id} 
+                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed" 
+                       > 
+                         {restartingItemId === item.id ? 'Restarting...' : 'Restart Encoding'} 
+                       </button> 
+                     )} 
+                     {/* Display Encoding Progress (if applicable) - Restore */} 
+                     {item.status === 'encoding' && ( 
+                       <div className="w-24 bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 flex items-center"> {/* Removed ml-2 */} 
+                         <div 
+                           className="bg-cyan-600 h-2.5 rounded-full" 
+                           style={{ width: `${item.encoding_progress ?? 0}%` }} 
+                         > 
+                         </div> 
+                         <span className="ml-1 text-xs text-cyan-700">{`${item.encoding_progress ?? 0}%`}</span> 
+                       </div> 
+                     )} 
+                 </div> 
+              </div> 
+          </div>
+      </div>
+    </li>
+  );
+};
+
 export default function Home() {
   const [url, setUrl] = useState('');
   const [message, setMessage] = useState('');
@@ -232,7 +395,7 @@ export default function Home() {
     }
   };
 
-  // --- New function to handle cancelling ---
+  // --- New function to handle cancelling --- 
   const handleCancel = async (itemId: string) => {
     setCancellingItemId(itemId); // Set loading state for this specific item
     setMessage('');
@@ -280,7 +443,7 @@ export default function Home() {
     }
   };
 
-  // --- New function to handle restarting encoding ---
+  // --- New function to handle restarting encoding --- 
   const handleRestartEncoding = async (itemId: string) => {
     setRestartingItemId(itemId);
     setMessage('');
@@ -304,7 +467,7 @@ export default function Home() {
     }
   };
 
-  // --- New function to handle saving settings ---
+  // --- New function to handle saving settings --- 
   const handleSaveSettings = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSavingSettings(true);
@@ -416,7 +579,7 @@ export default function Home() {
                         placeholder="e.g., C:\Users\You\Downloads\PermaVid"
                         className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
                     />
-                    {/* Basic validation hint - advanced validation later */}
+                    {/* Basic validation hint - advanced validation later */} 
                     <p className="mt-1 text-xs text-gray-500">Enter the full path for downloads.</p>
                 </div>
                 {/* Delete After Upload */} 
@@ -432,7 +595,7 @@ export default function Home() {
                         Delete local file after successful upload
                     </label>
                 </div>
-                {/* Auto Upload */}
+                {/* Auto Upload */} 
                 <div className="mb-6 flex items-center">
                     <input
                         id="autoUpload"
@@ -525,11 +688,11 @@ export default function Home() {
         {/* Queue Display */} 
         <div className="w-full max-w-4xl">
           <div className="flex justify-between items-center mb-4">
-             {/* *** UPDATED: Use filtered/sorted list length for display *** */}
+             {/* *** UPDATED: Use filtered/sorted list length for display *** */} 
              <h2 className="text-2xl font-semibold">Download Queue ({displayedQueueItems.length} items)</h2>
-             {/* --- Queue Controls (Filter, Sort, Clear) --- */}
+             {/* --- Queue Controls (Filter, Sort, Clear) --- */} 
              <div className="flex items-center space-x-2">
-                {/* --- Filter Dropdown --- */}
+                {/* --- Filter Dropdown --- */} 
                 <div className="relative">
                     <button
                         onClick={() => setShowFilterDropdown(!showFilterDropdown)}
@@ -558,7 +721,7 @@ export default function Home() {
                         </div>
                     )}
                 </div>
-                {/* --- Sort Dropdown --- */}
+                {/* --- Sort Dropdown --- */} 
                 <div className="relative">
                      <button
                          onClick={() => setShowSortDropdown(!showSortDropdown)}
@@ -582,7 +745,7 @@ export default function Home() {
                          </div>
                      )}
                  </div>
-                 {/* --- Clear Button Dropdown --- */}
+                 {/* --- Clear Button Dropdown --- */} 
                  <div className="relative">
                      <button
                          onClick={() => setShowClearDropdown(!showClearDropdown)}
@@ -651,123 +814,21 @@ export default function Home() {
                   {filterStatus === 'all' ? 'Queue is empty.' : `No items match filter "${filterStatus}".`}
                 </li>
               )}
+              {/* *** UPDATED: Map over items using the new QueueListItem component *** */}
               {displayedQueueItems.map((item) => (
-                <li key={item.id} className="px-4 py-4 sm:px-6">
-                  {/* Top Row: Title and Status Badge */}
-                  <div className="flex items-center justify-between space-x-2">
-                    {/* Make title take remaining space and truncate */}
-                    <div className="text-sm font-medium text-indigo-600 truncate flex-1 min-w-0">
-                      {item.title || item.url}
-                    </div>
-                    {/* Keep status badge fixed size */}
-                    <div className="ml-2 flex-shrink-0 flex">
-                      <p className={`px-2 py-0.5 inline-flex items-center text-xs leading-5 font-semibold rounded-full ${ // Added py-0.5 and items-center
-                        item.status === 'completed' ? 'bg-green-100 text-green-800' : 
-                        item.status === 'failed' ? 'bg-red-100 text-red-800' : 
-                        item.status === 'downloading' ? 'bg-yellow-100 text-yellow-800' : 
-                        item.status === 'uploading' ? 'bg-blue-100 text-blue-800' :
-                        item.status === 'cancelled' ? 'bg-gray-100 text-gray-800' :
-                        item.status === 'transferring' ? 'bg-blue-100 text-blue-800' : // Keep color for transferring
-                        item.status === 'encoding' ? 'bg-cyan-100 text-cyan-800' :
-                        item.status === 'encoded' ? 'bg-indigo-100 text-indigo-800' : // More distinct color for encoded
-                        'bg-purple-100 text-purple-800' // Default for queued
-                      }`}>
-                        {icons[item.status] || null} {/* Add icon here */}
-                        {item.status}
-                      </p>
-                    </div>
-                  </div>
-                  {/* Bottom Row: URL/Message and Action Button */}
-                  <div className="mt-2 sm:flex sm:justify-between sm:items-center">
-                    {/* Info Section (URL/Message) - Allow shrinking and truncating */}
-                    <div className="sm:flex-1 min-w-0 mr-4"> {/* Add min-w-0 here */}
-                      {/* Display URL when title exists */}
-                      {item.title && <p className="text-sm text-gray-500 truncate block">{item.url}</p>}
-
-                      {/* Display Message or Progress */}
-                      {item.status === 'downloading' && item.message?.startsWith('Downloading:') &&
-                        <div className="flex items-center mt-1">
-                          <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mr-2">
-                            <div 
-                              className="bg-yellow-500 h-2.5 rounded-full"
-                              style={{ width: `${item.message.match(/(\d+)%/)?.[1] ?? 0}%` }}
-                            ></div>
-                          </div>
-                          <span className="text-xs text-yellow-700 whitespace-nowrap">
-                            {item.message.match(/(\d+)%/)?.[0] ?? '0%'}
-                          </span>
-                        </div>
-                      }
-                      {/* Show standard message for other states or if download message is not progress */}
-                      {(!(item.status === 'downloading' && item.message?.startsWith('Downloading:')) && item.message) && (
-                         <p className="text-xs italic text-gray-400 truncate block mt-1">- {item.message}</p>
-                      )}
-                    </div>
-                     {/* Action Button Section - Keep fixed size */}
-                     <div className="mt-2 sm:mt-0 flex-shrink-0 flex items-center"> {/* Use flex items-center here */}
-                         {/* --- Add Cancel Button --- */}
-                         {(item.status === 'queued' || item.status === 'downloading') && (
-                           <button
-                             onClick={() => handleCancel(item.id)}
-                             disabled={cancellingItemId === item.id} // Disable button if this item is cancelling
-                             className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                           >
-                             {cancellingItemId === item.id ? 'Cancelling...' : 'Cancel'}
-                           </button>
-                         )}
-                         {/* --- ADDED: Add Upload Button for 'completed' items --- */}
-                         {item.status === 'completed' && (
-                           <button
-                             onClick={() => handleUpload(item.id)}
-                             disabled={uploadingItemId === item.id} // Disable if this specific item is uploading
-                             className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                           >
-                             {uploadingItemId === item.id ? 'Uploading...' : 'Upload'}
-                           </button>
-                         )}
-                         {/* Display Filemoon Link if available (uploaded, transferring, encoding, or encoded) */}
-                         {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.filemoon_url && (
-                           <button
-                             onClick={() => handleOpenLink(item.filemoon_url)}
-                             className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700"
-                           >
-                              View Link
-                           </button>
-                         )}
-                         {/* --- Add General Retry Button --- */}
-                         {item.status === 'failed' && !item.filemoon_url && ( // Only show if failed *before* upload
-                           <button
-                             onClick={() => handleRetry(item.id)}
-                             disabled={retryingItemId === item.id}
-                             className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-yellow-500 hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                           >
-                             {retryingItemId === item.id ? 'Retrying...' : 'Retry'}
-                           </button>
-                         )}
-                         {/* --- Add Restart Encoding Button --- */}
-                         {item.status === 'failed' && item.filemoon_url && ( // Only show restart if it failed *after* upload (has filemoon_url)
-                           <button
-                             onClick={() => handleRestartEncoding(item.id)}
-                             disabled={restartingItemId === item.id}
-                             className="ml-2 px-2 py-1 text-xs font-medium rounded-md text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                           >
-                             {restartingItemId === item.id ? 'Restarting...' : 'Restart Encoding'}
-                           </button>
-                         )}
-                         {/* Display Encoding Progress (if applicable) - Restore */}
-                         {item.status === 'encoding' && (
-                           <div className="ml-2 w-24 bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 flex items-center">
-                             <div
-                               className="bg-cyan-600 h-2.5 rounded-full"
-                               style={{ width: `${item.encoding_progress ?? 0}%` }}
-                             >
-                             </div>
-                             <span className="ml-1 text-xs text-cyan-700">{`${item.encoding_progress ?? 0}%`}</span>
-                           </div>
-                         )}
-                     </div>
-                  </div>
-                </li>
+                <QueueListItem 
+                  key={item.id}
+                  item={item}
+                  uploadingItemId={uploadingItemId}
+                  cancellingItemId={cancellingItemId}
+                  restartingItemId={restartingItemId}
+                  retryingItemId={retryingItemId}
+                  onUpload={handleUpload}
+                  onCancel={handleCancel}
+                  onRetry={handleRetry}
+                  onRestartEncoding={handleRestartEncoding}
+                  onOpenLink={handleOpenLink}
+                />
               ))}
             </ul>
           </div>
@@ -775,7 +836,7 @@ export default function Home() {
 
       </div>
 
-       {/* --- Conditionally Render Settings Modal --- */}
+       {/* --- Conditionally Render Settings Modal --- */} 
       {showSettingsModal && <SettingsModal />}
     </main>
   );

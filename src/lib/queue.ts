@@ -52,6 +52,7 @@ try {
       local_path TEXT, 
       info_json_path TEXT, 
       filemoon_url TEXT, 
+      files_vc_url TEXT, 
       encoding_progress INTEGER, 
       thumbnail_url TEXT, -- Add thumbnail URL column
       added_at INTEGER NOT NULL,
@@ -59,6 +60,21 @@ try {
     );
   `);
 
+  // --- Schema Migration: Add files_vc_url if it doesn't exist ---
+  try {
+    const columns = db.pragma("table_info(queue)") as { name: string }[]; // Fetch columns info
+    const hasFilesVcUrl = columns.some(col => col.name === 'files_vc_url');
+
+    if (!hasFilesVcUrl) {
+      console.log('Migrating database schema: Adding files_vc_url column to queue table...');
+      db.exec('ALTER TABLE queue ADD COLUMN files_vc_url TEXT');
+      console.log('Database schema migration successful.');
+    }
+  } catch (migrationError: any) {
+    console.error('FATAL: Queue table schema migration (files_vc_url) failed!', migrationError);
+    throw new Error(`Failed to migrate queue table schema: ${migrationError.message}`);
+  }
+  
   // --- Schema Migration: Add encoding_progress if it doesn't exist ---
   try {
     const columns = db.pragma("table_info(queue)") as { name: string }[];
@@ -170,7 +186,9 @@ export interface QueueItem {
     local_path?: string | null;
     info_json_path?: string | null;
     filemoon_url?: string | null; // Stores the filecode
+    files_vc_url?: string | null; // Stores the Files.vc URL
     encoding_progress?: number | null;
+    thumbnail_url?: string | null; // Store thumbnail URL
     added_at: number;
     updated_at: number;
 }
@@ -344,7 +362,7 @@ async function processQueue() {
 
         if (autoUploadEnabled) {
            console.log(`Auto-upload enabled. Triggering upload for item ${itemId}...`);
-           // Important: Store the necessary info before starting upload, as uploadToFilemoon needs it
+           // Important: Store the necessary info before starting upload, as upload needs it
            // Update the item with title, path etc. before potentially calling upload
            stmtUpdateStatus.run(
               'completed', // Temporarily mark completed to save paths, upload will change it
@@ -355,12 +373,25 @@ async function processQueue() {
               Date.now(), // updated_at
               itemId
            );
-           // Now trigger the upload. Don't await here, let it run in the background.
-           // The upload function itself will update the status to 'uploading'/'failed'.
-           uploadToFilemoon(itemId).catch(uploadError => {
+
+           // Determine which service to upload to based on the upload_target setting
+           const uploadTarget = getSetting('upload_target', 'filemoon');
+           
+           // Now trigger the upload based on the target. Don't await here, let it run in the background.
+           if (uploadTarget === 'filemoon' || uploadTarget === 'both') {
+             uploadToFilemoon(itemId).catch(uploadError => {
                 // Log error if the upload initiation fails, though uploadToFilemoon handles DB updates
-                console.error(`Error initiating auto-upload for ${itemId}:`, uploadError);
-           });
+                console.error(`Error initiating auto-upload to Filemoon for ${itemId}:`, uploadError);
+             });
+           }
+           
+           // If we're uploading to Files.vc only or both services
+           if (uploadTarget === 'files_vc' || uploadTarget === 'both') {
+             uploadToFilesVC(itemId).catch(uploadError => {
+                // Log error if the upload initiation fails
+                console.error(`Error initiating auto-upload to Files.vc for ${itemId}:`, uploadError);
+             });
+           }
         } else {
           // Auto-upload is disabled, mark as completed
           console.log(`Auto-upload disabled. Marking item ${itemId} as completed.`);
@@ -808,6 +839,144 @@ export async function uploadToFilemoon(itemId: string): Promise<{ success: boole
         let errorMessage = 'Filemoon upload failed.';
         if (axios.isAxiosError(uploadError)) {
             errorMessage = `Filemoon API error: ${uploadError.response?.status} - ${uploadError.response?.data?.msg || uploadError.message}`;
+        } else if (uploadError instanceof Error) {
+            errorMessage = `Upload error: ${uploadError.message}`;
+        }
+
+        // Update DB to 'failed'
+        try {
+             stmtUpdateStatus.run('failed', errorMessage, item.title, item.local_path, item.info_json_path, Date.now(), item.id);
+        } catch (dbUpdateError) { console.error(`Failed to mark item ${item.id} as failed after upload error:`, dbUpdateError); }
+
+        return { success: false, message: errorMessage };
+    }
+}
+
+// --- Files.vc Upload Logic (Use settings) ---
+export async function uploadToFilesVC(itemId: string): Promise<{ success: boolean, message: string, filecode?: string }> {
+    const apiKey = getSetting('files_vc_api_key'); // <-- Read API key from settings
+    if (!apiKey) {
+        console.error('Files.vc API key not found in settings.');
+        return { success: false, message: 'Upload failed: Files.vc API key is missing in settings.' };
+    }
+
+    let item: QueueItem | undefined;
+    try {
+        item = stmtGetItemById.get(itemId) as QueueItem | undefined;
+    } catch (dbError: any) {
+        console.error(`Failed to retrieve item ${itemId} from DB:`, dbError);
+        return { success: false, message: `Database error retrieving item: ${dbError.message}` };
+    }
+
+    if (!item) {
+        return { success: false, message: `Upload failed: Item with ID ${itemId} not found.` };
+    }
+    if (!item.local_path || item.status !== 'completed') {
+        return { success: false, message: `Upload failed: Item ${itemId} is not in 'completed' state or missing local file path.` };
+    }
+
+    const filePath = item.local_path;
+
+    // 1. Check if file exists
+    try {
+        await fsPromises.access(filePath);
+    } catch (fileError) {
+        console.error(`File not found for upload: ${filePath}`);
+        // Update DB to reflect the error
+        try {
+           stmtUpdateStatus.run('failed', `Upload error: Local file not found at ${filePath}`, item.title, item.local_path, item.info_json_path, Date.now(), item.id);
+        } catch (dbUpdateError) { console.error(`Failed to mark item ${item.id} as failed after file not found error:`, dbUpdateError); }
+        return { success: false, message: 'Upload failed: Local file not found.' };
+    }
+
+    try {
+        // 2. Mark as 'uploading' in DB
+        const now = Date.now();
+        stmtMarkUploading.run('uploading', 'Starting Files.vc upload...', now, item.id);
+        console.log(`Item ${itemId}: Marked as uploading to Files.vc.`);
+
+        // 3. Prepare Form Data
+        const formData = new FormData();
+        formData.append('api_key', apiKey);
+        formData.append('file', fs.createReadStream(filePath), path.basename(filePath)); // Send filename
+
+        // 4. Upload File
+        console.log(`Item ${itemId}: Uploading file ${filePath} to Files.vc...`);
+        const uploadResponse = await axios.post('https://files.vc/api/upload', formData, {
+            headers: formData.getHeaders(),
+            maxContentLength: Infinity, // Allow large file uploads
+            maxBodyLength: Infinity
+        });
+
+        console.log(`Item ${itemId}: Upload response status: ${uploadResponse.status}`);
+
+        if (!uploadResponse.data?.success) {
+            throw new Error(`Files.vc upload failed. Msg: ${uploadResponse.data?.message || 'Unknown error'}`);
+        }
+
+        const filecode = uploadResponse.data.data.file_code;
+        console.log(`Item ${itemId}: Upload successful! Filecode: ${filecode}`);
+        
+        // 5. Update DB with the Files.vc URL
+        // Add a new prepared statement for updating Files.vc URL
+        const stmtUpdateFilesVcUrl = db.prepare(
+            'UPDATE queue SET files_vc_url = ? WHERE id = ?'
+        );
+        stmtUpdateFilesVcUrl.run(filecode, item.id);
+        
+        // 6. Update status to 'transferring' or 'completed' depending on upload target
+        const uploadTarget = getSetting('upload_target', 'filemoon');
+        let newStatus = 'completed'; // Default
+        let statusMessage = 'Upload to Files.vc successful.';
+        
+        if (uploadTarget === 'both') {
+            // If uploading to both, we keep it as 'completed' so Filemoon upload can still happen
+            statusMessage = 'Upload to Files.vc successful. Filemoon upload pending.';
+        } else {
+            // If only Files.vc, mark as 'uploaded'
+            newStatus = 'uploaded';
+            statusMessage = 'Upload to Files.vc successful. File is being processed.';
+        }
+        
+        stmtUpdateStatus.run(newStatus, statusMessage, item.title, item.local_path, item.info_json_path, Date.now(), item.id);
+        console.log(`Item ${itemId}: Database status updated to '${newStatus}' with Files.vc URL.`);
+
+        // 7. Optional: Delete local file if configured in settings
+        if (shouldDeleteAfterUpload() && uploadTarget !== 'both') { 
+            // Only delete if we're not uploading to both services
+            console.log(`Item ${itemId}: Deleting local files after successful upload (setting is enabled)...`);
+            try {
+                await fsPromises.unlink(filePath);
+                console.log(`  - Deleted video: ${filePath}`);
+                if (item.info_json_path) {
+                    // Check if info.json still exists before trying to delete
+                    try {
+                       await fsPromises.access(item.info_json_path);
+                       await fsPromises.unlink(item.info_json_path);
+                       console.log(`  - Deleted metadata: ${item.info_json_path}`);
+                    } catch (infoAccessError: any) {
+                        if (infoAccessError.code !== 'ENOENT') {
+                           console.warn(`  - Could not delete metadata file ${item.info_json_path} (may already be gone or permissions issue):`, infoAccessError.message);
+                        } else {
+                           console.log(`  - Metadata file ${item.info_json_path} already gone.`);
+                        }
+                    }
+                }
+            } catch (deleteError: any) {
+                console.error(`  - Failed to delete local file(s) for item ${itemId} after upload:`, deleteError.message);
+                // Don't fail the overall upload function, just log the error
+            }
+        } else {
+             console.log(`Item ${itemId}: Keeping local files after successful upload (setting is disabled or uploading to both services).`);
+        }
+
+        return { success: true, message: `Upload successful! Filecode: ${filecode}`, filecode: filecode };
+
+    } catch (uploadError: any) {
+        console.error(`Failed to upload item ${itemId} (${filePath}) to Files.vc:`, uploadError.response?.data || uploadError.message || uploadError);
+        let errorMessage = 'Files.vc upload failed.';
+        if (axios.isAxiosError(uploadError)) {
+            errorMessage = `Files.vc API error: ${uploadError.response?.status} - ${uploadError.response?.data?.message || uploadError.message}`;
         } else if (uploadError instanceof Error) {
             errorMessage = `Upload error: ${uploadError.message}`;
         }

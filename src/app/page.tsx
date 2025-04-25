@@ -68,6 +68,7 @@ interface QueueItem {
   message?: string;
   title?: string;
   filemoon_url?: string; // Stores the filecode
+  files_vc_url?: string; // Stores the Files.vc URL
   encoding_progress?: number | null; // Add encoding progress field
   thumbnail_url?: string; // Add thumbnail URL
   added_at?: number; // Make sure added_at is available for sorting
@@ -77,9 +78,11 @@ interface QueueItem {
 // Define structure for settings
 interface AppSettings {
     filemoon_api_key?: string;
+    files_vc_api_key?: string; // Add Files.vc API key
     download_directory?: string;
     delete_after_upload?: string; // Store as string 'true'/'false'
     auto_upload?: string; // Store as string 'true'/'false'
+    upload_target?: 'filemoon' | 'files_vc' | 'both'; // Add upload target preference
 }
 
 // --- Add TypeScript definition for the exposed Electron API --- 
@@ -211,6 +214,15 @@ const QueueListItem: React.FC<QueueItemProps> = ({
                        <button 
                          onClick={() => onOpenLink(item.filemoon_url)} 
                          className="px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700" 
+                       > 
+                          View Link 
+                       </button> 
+                     )} 
+                     {/* Display Files.vc Link if available (uploaded, transferring, encoding, or encoded) */} 
+                     {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.files_vc_url && ( 
+                       <button 
+                         onClick={() => onOpenLink(item.files_vc_url)} 
+                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-green-600 hover:bg-green-700" 
                        > 
                           View Link 
                        </button> 
@@ -477,9 +489,11 @@ export default function Home() {
     // Prepare the settings object to send
     const settingsToSave: AppSettings = {
         filemoon_api_key: settings.filemoon_api_key || '', // Send empty string if undefined
+        files_vc_api_key: settings.files_vc_api_key || '', // Send empty string if undefined
         download_directory: settings.download_directory || '',
         delete_after_upload: settings.delete_after_upload === 'true' ? 'true' : 'false', // Ensure boolean-like string
-        auto_upload: settings.auto_upload === 'true' ? 'true' : 'false' // Ensure boolean-like string
+        auto_upload: settings.auto_upload === 'true' ? 'true' : 'false', // Ensure boolean-like string
+        upload_target: settings.upload_target || 'filemoon' // Default to Filemoon if not set
     };
 
     try {
@@ -507,7 +521,21 @@ export default function Home() {
   const handleOpenLink = async (filecode: string | null | undefined) => {
     console.log('handleOpenLink called with filecode:', filecode);
     if (!filecode) return;
-    const url = `https://filemoon.sx/d/${filecode}`;
+    
+    // Determine if it's a Files.vc link or Filemoon link based on format/prefix
+    let url;
+    if (filecode.startsWith('https://')) {
+      // If it's a full URL already, use it directly (future-proofing)
+      url = filecode;
+    } else if (filecode.startsWith('files_vc:')) {
+      // Handle Files.vc specific format if needed
+      const code = filecode.replace('files_vc:', '');
+      url = `https://files.vc/d/${code}`;
+    } else {
+      // Default to Filemoon if no specific format is detected
+      url = `https://filemoon.sx/d/${filecode}`;
+    }
+    
     if (window.electronAPI) {
       console.log(`Attempting to open link via Electron: ${url}`);
       try {
@@ -568,6 +596,18 @@ export default function Home() {
                         className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
                     />
                 </div>
+                {/* Files.vc API Key */} 
+                <div className="mb-4">
+                    <label htmlFor="filesVcApiKey" className="block text-sm font-medium text-gray-700 mb-1">Files.vc API Key</label>
+                    <input
+                        id="filesVcApiKey"
+                        type="text" 
+                        value={settings.files_vc_api_key || ''}
+                        onChange={(e) => setSettings(prev => ({ ...prev, files_vc_api_key: e.target.value }))}
+                        placeholder="Enter your Files.vc API Key"
+                        className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
+                    />
+                </div>
                 {/* Download Directory */} 
                 <div className="mb-4">
                     <label htmlFor="downloadDir" className="block text-sm font-medium text-gray-700 mb-1">Download Directory</label>
@@ -607,6 +647,20 @@ export default function Home() {
                     <label htmlFor="autoUpload" className="ml-2 block text-sm text-gray-900">
                         Auto Upload
                     </label>
+                </div>
+                {/* Upload Target */} 
+                <div className="mb-6">
+                    <label htmlFor="uploadTarget" className="block text-sm font-medium text-gray-700 mb-1">Upload Target</label>
+                    <select
+                        id="uploadTarget"
+                        value={settings.upload_target || 'filemoon'}
+                        onChange={(e) => setSettings(prev => ({ ...prev, upload_target: e.target.value as 'filemoon' | 'files_vc' | 'both' }))}
+                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+                    >
+                        <option value="filemoon">Filemoon</option>
+                        <option value="files_vc">Files.vc</option>
+                        <option value="both">Both</option>
+                    </select>
                 </div>
 
                 {/* Action Buttons */} 

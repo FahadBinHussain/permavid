@@ -105,9 +105,18 @@ function applyDefaultSettings() {
     if (getSetting('delete_after_upload') === undefined) {
         setSetting('delete_after_upload', 'true'); // Store boolean as string 'true'/'false'
     }
-     if (getSetting('filemoon_api_key') === undefined) {
-         // Try reading from env as initial default, but store empty if not found
+    if (getSetting('filemoon_api_key') === undefined) {
+        // Try reading from env as initial default, but store empty if not found
         setSetting('filemoon_api_key', process.env.FILEMOON_API_KEY || '');
+    }
+    // Add Files.vc API key setting
+    if (getSetting('files_vc_api_key') === undefined) {
+        // Try reading from env as initial default, but store empty if not found
+        setSetting('files_vc_api_key', process.env.FILES_VC_API_KEY || '');
+    }
+    // Add setting to control upload behavior
+    if (getSetting('upload_target') === undefined) {
+        setSetting('upload_target', 'filemoon'); // Options: 'filemoon', 'files_vc', 'both'
     }
 }
 

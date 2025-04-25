@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { uploadToFilemoon, getQueue } from '@/lib/queue'; // Assuming getQueue might be useful for checks, or just uploadToFilemoon
+import { uploadToFilemoon, uploadToFilesVC, getQueue } from '@/lib/queue';
+import { getSetting } from '@/lib/settings';
 
 // POST request to trigger upload for a specific item ID
 export async function POST(
@@ -15,24 +16,53 @@ export async function POST(
   console.log(`Received upload request for item ID: ${itemId}`);
 
   try {
-    // Optional: Add checks here, e.g., ensure item exists and is 'completed' before attempting upload
-    // const currentQueue = getQueue();
-    // const itemExists = currentQueue.find(item => item.id === itemId && item.status === 'completed');
-    // if (!itemExists) {
-    //     return NextResponse.json({ error: `Item ${itemId} not found or not completed.` }, { status: 404 });
-    // }
-
-    const result = await uploadToFilemoon(itemId);
-
-    if (result.success) {
-      // console.log(`Successfully initiated/completed upload for item ${itemId}: ${result.message}`); // Logged in lib/queue.ts
-      return NextResponse.json({ message: result.message, filecode: result.filecode });
-    } else {
-      console.error(`Upload failed for item ${itemId}: ${result.message}`);
-      // Determine appropriate status code based on error (e.g., 404 if item not found, 500 for server errors)
-       // For simplicity, using 500 for most failures now
-      return NextResponse.json({ error: result.message || 'Failed to upload item to Filemoon' }, { status: 500 });
+    // Get the upload target from settings
+    const uploadTarget = getSetting('upload_target', 'filemoon');
+    
+    // Determine where to upload based on the upload_target setting
+    if (uploadTarget === 'filemoon' || uploadTarget === 'both') {
+      // Upload to Filemoon
+      const filemoonResult = await uploadToFilemoon(itemId);
+      
+      if (!filemoonResult.success && uploadTarget === 'filemoon') {
+        // If we're only uploading to Filemoon and it failed, return an error
+        console.error(`Upload to Filemoon failed for item ${itemId}: ${filemoonResult.message}`);
+        return NextResponse.json({ error: filemoonResult.message || 'Failed to upload item to Filemoon' }, { status: 500 });
+      }
+      
+      // If we're uploading to both, continue even if Filemoon failed
+      if (uploadTarget === 'both' && !filemoonResult.success) {
+        console.warn(`Upload to Filemoon failed, continuing with Files.vc: ${filemoonResult.message}`);
+      }
+      
+      // If we're only uploading to Filemoon and it succeeded, return success
+      if (uploadTarget === 'filemoon') {
+        return NextResponse.json({ 
+          message: filemoonResult.message, 
+          filecode: filemoonResult.filecode,
+          service: 'filemoon'
+        });
+      }
     }
+    
+    // If we're here, we need to upload to Files.vc
+    if (uploadTarget === 'files_vc' || uploadTarget === 'both') {
+      const filesVcResult = await uploadToFilesVC(itemId);
+      
+      if (!filesVcResult.success) {
+        console.error(`Upload to Files.vc failed for item ${itemId}: ${filesVcResult.message}`);
+        return NextResponse.json({ error: filesVcResult.message || 'Failed to upload item to Files.vc' }, { status: 500 });
+      }
+      
+      return NextResponse.json({ 
+        message: filesVcResult.message, 
+        filecode: filesVcResult.filecode,
+        service: uploadTarget === 'both' ? 'both' : 'files_vc'
+      });
+    }
+    
+    // This shouldn't happen if upload_target is valid
+    return NextResponse.json({ error: 'Invalid upload target setting' }, { status: 500 });
 
   } catch (error: any) {
     console.error(`Error processing upload request for item ${itemId}:`, error);

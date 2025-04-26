@@ -8,15 +8,19 @@
     "dev:next": "next dev --turbopack",
     "dev": "concurrently \"npm:dev:next\" \"npm:dev:electron\"",
     "dev:electron": "wait-on http://localhost:3000 && tsc electron/main.ts electron/preload.ts --outDir electron/dist --module commonjs --target es2018 --esModuleInterop && electron .",
+    "dev:tauri": "tauri dev",
     "build:next": "next build",
     "build:electron": "tsc electron/main.ts electron/preload.ts --outDir electron/dist --module commonjs --target es2018 --esModuleInterop",
     "build": "npm run build:next && npm run build:electron",
+    "build:tauri": "tauri build",
     "start": "next start",
     "lint": "next lint",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "dist:tauri": "npm run build:next && npm run build:tauri"
   },
   "dependencies": {
     "@next/font": "^14.2.5",
+    "@tauri-apps/api": "^1.5.3",
     "axios": "^1.8.4",
     "better-sqlite3": "^10.1.0",
     "form-data": "^4.0.2",
@@ -27,6 +31,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
+    "@tauri-apps/cli": "^1.5.11",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -51,7 +56,8 @@
     "video",
     "download",
     "electron",
-    "nextjs"
+    "nextjs",
+    "tauri"
   ],
   "author": "Your Name",
   "license": "MIT",

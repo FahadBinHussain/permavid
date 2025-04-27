@@ -92,11 +92,17 @@ export async function getSettingsDirectly(): Promise<AppSettings> {
     // Log the raw response for debugging
     console.log('Raw settings response:', JSON.stringify(result, null, 2));
     
-    // Handle various result formats
+    // Enhanced response parsing with nested property checking
     if (result && typeof result === 'object') {
-      // Handle standard response format
-      if ('data' in result && result.data) {
+      // Handle case where result contains a 'data' property with settings
+      if (result.data && typeof result.data === 'object') {
         console.log('Settings found in result.data format');
+        return ensureValidSettings(result.data);
+      }
+      
+      // Handle case where result contains a 'message' and 'data' property (Tauri response format)
+      if (result.message && result.data && typeof result.data === 'object') {
+        console.log('Settings found in Tauri standard response format');
         return ensureValidSettings(result.data);
       }
       
@@ -107,9 +113,10 @@ export async function getSettingsDirectly(): Promise<AppSettings> {
         return ensureValidSettings(result as AppSettings);
       }
       
-      // Handle direct object return with key properties
-      if ('filemoon_api_key' in result || 'files_vc_api_key' in result || 
-          'download_directory' in result || 'upload_target' in result) {
+      // Handle direct object return with key properties - fix the type check
+      const resultObj = result as Record<string, unknown>;
+      if ('filemoon_api_key' in resultObj || 'files_vc_api_key' in resultObj || 
+          'download_directory' in resultObj || 'upload_target' in resultObj) {
         console.log('Settings found with known properties');
         return ensureValidSettings(result as AppSettings);
       }
@@ -129,8 +136,11 @@ export async function getSettingsDirectly(): Promise<AppSettings> {
 function ensureValidSettings(settings: any): AppSettings {
   const defaultSettings = createEmptySettings();
   
+  // Log what we're working with for debugging
+  console.log('Processing settings object:', settings);
+  
   // Return a validated object with all required fields
-  return {
+  const validatedSettings = {
     filemoon_api_key: settings?.filemoon_api_key || defaultSettings.filemoon_api_key,
     files_vc_api_key: settings?.files_vc_api_key || defaultSettings.files_vc_api_key,
     download_directory: settings?.download_directory || defaultSettings.download_directory,
@@ -138,6 +148,9 @@ function ensureValidSettings(settings: any): AppSettings {
     auto_upload: settings?.auto_upload?.toString() || defaultSettings.auto_upload,
     upload_target: settings?.upload_target || defaultSettings.upload_target
   };
+  
+  console.log('Validated settings to be used:', validatedSettings);
+  return validatedSettings;
 }
 
 // Helper to ensure we always have a valid settings object
@@ -152,13 +165,36 @@ export function createEmptySettings(): AppSettings {
   };
 }
 
+// Add direct debugging helper to inspect received settings format
+export async function debugSettings(): Promise<any> {
+  if (typeof window === 'undefined' || !window.__TAURI__) {
+    return { error: 'Tauri not available' };
+  }
+  
+  try {
+    const { invoke } = await import('@tauri-apps/api/tauri');
+    const rawSettings = await invoke('get_settings');
+    return {
+      rawSettings,
+      type: typeof rawSettings,
+      keys: rawSettings && typeof rawSettings === 'object' ? Object.keys(rawSettings) : [],
+      hasData: rawSettings && typeof rawSettings === 'object' && 'data' in rawSettings,
+      dataType: rawSettings && typeof rawSettings === 'object' && 'data' in rawSettings ? 
+        typeof (rawSettings as Record<string, unknown>).data : null
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // Helper to attach this function to the window for troubleshooting
 export function attachDebugHelpers() {
   if (typeof window !== 'undefined') {
     (window as any).__debugSettings = {
       getSettings: getSettingsDirectly,
       createEmpty: createEmptySettings,
-      safeInvoke: safeInvoke
+      safeInvoke: safeInvoke,
+      debug: debugSettings
     };
   }
 }

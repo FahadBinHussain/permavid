@@ -354,50 +354,71 @@ export default function Home() {
 
   const fetchSettings = useCallback(async () => {
     try {
-      console.log('Home: Fetching settings via direct helper...');
-      console.log('Home: Tauri available check:', typeof window !== 'undefined' && !!window.__TAURI__);
+      console.log('Home: Fetching settings via API...');
       
-      // Add more detailed error trapping
-      let data;
-      try {
-        // Use our robust direct settings fetcher instead of the API
-        data = await getSettingsDirectly();
-        console.log('Home: Settings received via direct helper:', JSON.stringify(data, null, 2));
-      } catch (directFetchError) {
-        console.error('Critical error in getSettingsDirectly():', directFetchError);
-        console.error('Stack:', directFetchError instanceof Error ? directFetchError.stack : 'No stack available');
-        
-        // Fall back to empty settings
-        console.log('Home: Using empty settings due to direct fetch error');
-        data = createEmptySettings();
+      // Use standard fetch to get settings from the API route
+      const response = await fetch('/api/settings');
+      
+      if (!response.ok) {
+          const errorText = await response.text().catch(() => 'No error details available');
+          console.error(`API error response (${response.status}) fetching settings:`, errorText);
+          throw new Error(`Failed to fetch settings: Server responded with ${response.status}`);
       }
       
-      // Ensure we always have a valid settings object
-      if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
-        console.log('Home: No settings found or invalid format, using empty settings');
-        setSettings(createEmptySettings());
-      } else {
-        // Validate each expected field exists with fallbacks
-        const validatedSettings: AppSettings = {
-          filemoon_api_key: data.filemoon_api_key || '',
-          files_vc_api_key: data.files_vc_api_key || '',
-          download_directory: data.download_directory || '',
-          delete_after_upload: typeof data.delete_after_upload === 'string' ? data.delete_after_upload : 'false',
-          auto_upload: typeof data.auto_upload === 'string' ? data.auto_upload : 'false',
-          upload_target: data.upload_target || 'filemoon'
-        };
-        
-        console.log('Home: Using validated settings:', JSON.stringify(validatedSettings, null, 2));
-        setSettings(validatedSettings);
+      // Parse the JSON safely
+      let data: AppSettings;
+      try {
+          data = await response.json();
+      } catch (jsonError) {
+          console.error('Failed to parse settings JSON response:', jsonError);
+          throw new Error('Invalid response format from settings API');
+      }
+      
+      console.log('Home: Settings received via API:', JSON.stringify(data, null, 2));
+
+      // Enhanced settings validation and logging
+      if (!data || typeof data !== 'object') {
+        console.log('Home: Invalid settings format from API, using empty settings');
+        setSettings(createEmptySettings()); // Assuming createEmptySettings provides defaults
+        return;
+      }
+
+      // Validate each expected field exists with fallbacks
+      const validatedSettings: AppSettings = {
+        filemoon_api_key: data.filemoon_api_key || '',
+        files_vc_api_key: data.files_vc_api_key || '',
+        download_directory: data.download_directory || '',
+        delete_after_upload: typeof data.delete_after_upload === 'string' ? data.delete_after_upload : 'false',
+        auto_upload: typeof data.auto_upload === 'string' ? data.auto_upload : 'false',
+        upload_target: data.upload_target || 'filemoon'
+      };
+
+      console.log('Home: Using validated settings from API:', JSON.stringify(validatedSettings, null, 2));
+      setSettings(validatedSettings);
+
+      // For debugging - log to UI console for user to see
+      if (typeof window !== 'undefined' && window.console) {
+        console.info('%c📢 Settings loaded from API:', 'color: green; font-weight: bold;');
+        console.info('%c🔑 Filemoon API Key:', 'color: blue;',
+          validatedSettings.filemoon_api_key ?
+          validatedSettings.filemoon_api_key.substring(0, 4) + '****' :
+          '(empty)');
+        console.info('%c🔑 Files.vc API Key:', 'color: blue;',
+          validatedSettings.files_vc_api_key ?
+          validatedSettings.files_vc_api_key.substring(0, 4) + '****' :
+          '(empty)');
+        console.info('%c📁 Download Directory:', 'color: blue;', validatedSettings.download_directory || '(empty)');
+        console.info('%c🔄 Auto Upload:', 'color: blue;', validatedSettings.auto_upload);
+        console.info('%c🎯 Upload Target:', 'color: blue;', validatedSettings.upload_target);
       }
     } catch (fetchError: any) {
       console.error('Unhandled error in fetchSettings:', fetchError);
       console.error('Stack trace:', fetchError instanceof Error ? fetchError.stack : 'No stack available');
       setError('Failed to load application settings. Using defaults.');
-      
+
       // Set empty settings as fallback
       console.log('Home: Using empty settings due to error');
-      setSettings(createEmptySettings());
+      setSettings(createEmptySettings()); // Assuming createEmptySettings provides defaults
     }
   }, []); // Also no dependencies
 
@@ -689,6 +710,16 @@ export default function Home() {
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex justify-center items-center z-50">
         <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-lg">
             <h2 className="text-2xl font-bold mb-6">Application Settings</h2>
+            
+            {/* Debug info for troubleshooting - hidden in normal operation */}
+            {process.env.NODE_ENV !== 'production' && (
+              <div className="mb-4 p-2 bg-gray-100 rounded text-xs">
+                <p><strong>Debug Info:</strong></p>
+                <p>Settings loaded: {Object.keys(settings).length > 0 ? 'Yes' : 'No'}</p>
+                <p>Settings keys: {Object.keys(settings).join(', ')}</p>
+              </div>
+            )}
+            
             <form onSubmit={handleSaveSettings}>
                 {/* Filemoon API Key */} 
                 <div className="mb-4">
@@ -896,107 +927,72 @@ export default function Home() {
                              onMouseLeave={() => setShowSortDropdown(false)}
                          >
                              <div className="py-1" role="menu" aria-orientation="vertical">
-                                 <button onClick={() => { setSortKey('added_at_desc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'added_at_desc' ? 'font-bold' : ''}`} role="menuitem">Date Added (Newest)</button>
-                                 <button onClick={() => { setSortKey('added_at_asc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'added_at_asc' ? 'font-bold' : ''}`} role="menuitem">Date Added (Oldest)</button>
-                                 <button onClick={() => { setSortKey('title_asc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'title_asc' ? 'font-bold' : ''}`} role="menuitem">Title (A-Z)</button>
-                                 <button onClick={() => { setSortKey('title_desc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'title_desc' ? 'font-bold' : ''}`} role="menuitem">Title (Z-A)</button>
-                                 <button onClick={() => { setSortKey('status'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'status' ? 'font-bold' : ''}`} role="menuitem">Status</button>
+                                 <button onClick={() => { setSortKey('added_at_desc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'added_at_desc' ? 'font-bold' : ''}`}>Added (Newest First)</button>
+                                 <button onClick={() => { setSortKey('added_at_asc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'added_at_asc' ? 'font-bold' : ''}`}>Added (Oldest First)</button>
+                                 <button onClick={() => { setSortKey('title_asc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'title_asc' ? 'font-bold' : ''}`}>Title (A-Z)</button>
+                                 <button onClick={() => { setSortKey('title_desc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'title_desc' ? 'font-bold' : ''}`}>Title (Z-A)</button>
+                                 <button onClick={() => { setSortKey('status'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'status' ? 'font-bold' : ''}`}>Status</button>
                              </div>
                          </div>
                      )}
                  </div>
-                 {/* --- Clear Button Dropdown --- */} 
+                 {/* --- Clear Buttons Dropdown --- */}
                  <div className="relative">
                      <button
                          onClick={() => setShowClearDropdown(!showClearDropdown)}
                          disabled={isClearing}
-                         className="px-3 py-1 text-xs font-medium rounded-md text-white bg-gray-500 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                         className="px-3 py-1 text-xs font-medium rounded-md text-white bg-red-500 hover:bg-red-600 disabled:opacity-50 flex items-center"
                      >
                          Clear...
                          <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
                      </button>
-
-                     {/* Dropdown Menu */} 
                      {showClearDropdown && (
-                         <div 
-                            className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-10"
-                            onMouseLeave={() => setShowClearDropdown(false)} // Close on mouse leave
+                         <div
+                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20" // Increased z-index
+                             onMouseLeave={() => setShowClearDropdown(false)}
                          >
-                             <div className="py-1" role="menu" aria-orientation="vertical" aria-labelledby="options-menu">
-                                 <button
-                                     onClick={() => { handleClearQueue('completed'); setShowClearDropdown(false); }}
-                                     // *** NOTE: disabled check uses the FULL `queue` state ***
-                                     disabled={!queue.some(item => item.status === 'completed')} // Keep using full queue
-                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                                     role="menuitem"
-                                 >
-                                     Clear Completed
-                                 </button>
-                                 <button
-                                     onClick={() => { handleClearQueue('failed'); setShowClearDropdown(false); }}
-                                     // *** NOTE: disabled check uses the FULL `queue` state ***
-                                     disabled={!queue.some(item => item.status === 'failed' || item.status === 'uploading')} // Keep using full queue
-                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                                     role="menuitem"
-                                 >
-                                     Clear Failed/Uploading
-                                 </button>
-                                 <button
-                                     onClick={() => { handleClearQueue('cancelled'); setShowClearDropdown(false); }}
-                                     // *** NOTE: disabled check uses the FULL `queue` state ***
-                                     disabled={!queue.some(item => item.status === 'cancelled')} // Keep using full queue
-                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                                     role="menuitem"
-                                 >
-                                     Clear Cancelled
-                                 </button>
-                                 <button
-                                     onClick={() => { handleClearQueue('finished'); setShowClearDropdown(false); }}
-                                     // *** NOTE: disabled check uses the FULL `queue` state ***
-                                     disabled={!queue.some(item => item.status === 'completed' || item.status === 'failed')} // Keep using full queue
-                                     className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                                     role="menuitem"
-                                 >
-                                     Clear All Finished
-                                 </button>
+                             <div className="py-1" role="menu" aria-orientation="vertical">
+                                 <button onClick={() => { handleClearQueue('completed'); setShowClearDropdown(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" role="menuitem">Clear Completed</button>
+                                 <button onClick={() => { handleClearQueue('failed'); setShowClearDropdown(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" role="menuitem">Clear Failed</button>
+                                 <button onClick={() => { handleClearQueue('cancelled'); setShowClearDropdown(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" role="menuitem">Clear Cancelled</button>
+                                 <button onClick={() => { handleClearQueue('finished'); setShowClearDropdown(false); }} className="block w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50 font-medium" role="menuitem">Clear All Finished</button>
                              </div>
                          </div>
                      )}
                  </div>
              </div>
-          </div>
+           </div>
 
-          <div className="bg-white shadow overflow-hidden sm:rounded-md">
-            <ul role="list" className="divide-y divide-gray-200">
-              {/* *** UPDATED: Use filtered/sorted list for display checks and mapping *** */}
-              {displayedQueueItems.length === 0 && (
-                <li className="px-4 py-4 text-center text-gray-500">
-                  {filterStatus === 'all' ? 'Queue is empty.' : `No items match filter "${filterStatus}".`}
-                </li>
-              )}
-              {/* *** UPDATED: Map over items using the new QueueListItem component *** */}
-              {displayedQueueItems.map((item) => (
-                <QueueListItem 
-                  key={item.id}
-                  item={item}
-                  uploadingItemId={uploadingItemId}
-                  cancellingItemId={cancellingItemId}
-                  restartingItemId={restartingItemId}
-                  retryingItemId={retryingItemId}
-                  onUpload={handleUpload}
-                  onCancel={handleCancel}
-                  onRetry={handleRetry}
-                  onRestartEncoding={handleRestartEncoding}
-                  onOpenLink={handleOpenLink}
-                />
-              ))}
-            </ul>
-          </div>
+           {/* Queue List */}
+           <div className="bg-white shadow overflow-hidden sm:rounded-md mt-4">
+             <ul role="list" className="divide-y divide-gray-200">
+               {displayedQueueItems.length === 0 ? (
+                 <li className="px-4 py-4 sm:px-6 text-center text-gray-500">
+                   No items in the queue{filterStatus !== 'all' ? ` matching filter '${filterStatus}'` : ''}. Add a URL above!
+                 </li>
+               ) : (
+                 displayedQueueItems.map((item) => (
+                   <QueueListItem
+                     key={item.id}
+                     item={item}
+                     uploadingItemId={uploadingItemId}
+                     cancellingItemId={cancellingItemId}
+                     restartingItemId={restartingItemId}
+                     retryingItemId={retryingItemId}
+                     onUpload={handleUpload}
+                     onCancel={handleCancel}
+                     onRetry={handleRetry}
+                     onRestartEncoding={handleRestartEncoding}
+                     onOpenLink={handleOpenLink}
+                   />
+                 ))
+               )}
+             </ul>
+           </div>
         </div>
-
       </div>
 
-       {/* --- Conditionally Render Settings Modal --- */} 
+      {/* --- Settings Modal --- */}
       {showSettingsModal && <SettingsModal />}
     </main>
   );

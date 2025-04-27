@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
 import { restartFilemoonEncoding } from '@/lib/queue';
 
+// Add these export configurations for static export compatibility
+export const dynamic = 'force-dynamic';
+export const revalidate = 0; // No cache, always fetch fresh data
+
 // POST request to trigger encoding restart for a specific item ID
 export async function POST(
   request: Request,
   { params }: { params: { id: string } }
 ) {
-  const { id: itemId } = await params;
+  const itemId = params.id;
 
   if (!itemId) {
     return NextResponse.json({ error: 'Item ID is required' }, { status: 400 });

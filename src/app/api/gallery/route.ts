@@ -23,4 +23,8 @@ export async function GET(request: Request) {
     console.error('API: Error processing gallery request:', error);
     return NextResponse.json({ error: 'Failed to fetch encoded items for gallery' }, { status: 500 });
   }
-} 
+}
+
+// Add these export configurations for static export compatibility
+export const dynamic = 'force-dynamic';
+export const revalidate = 0; // No cache, always fetch fresh data 

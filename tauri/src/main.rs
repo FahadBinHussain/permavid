@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::Path;
 
 // State for holding the database connection
 struct AppState {
@@ -103,7 +104,22 @@ async fn get_settings(app_state: State<'_, AppState>) -> Result<Response<AppSett
             message: "Settings retrieved successfully".to_string(),
             data: Some(settings),
         }),
-        Err(e) => Err(e.to_string()),
+        Err(e) => {
+            // Log the error but return empty settings instead of failing
+            eprintln!("Error retrieving settings: {}", e);
+            Ok(Response {
+                success: true,
+                message: "Settings table empty or not found, using defaults".to_string(),
+                data: Some(AppSettings {
+                    filemoon_api_key: None,
+                    files_vc_api_key: None,
+                    download_directory: None,
+                    delete_after_upload: None,
+                    auto_upload: None,
+                    upload_target: None,
+                }),
+            })
+        }
     }
 }
 
@@ -144,6 +160,25 @@ async fn create_directory(path: String) -> Result<Response<()>, String> {
     }
 }
 
+#[tauri::command]
+async fn import_from_file(path: String, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
+    // Check if file exists
+    if !Path::new(&path).exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+    
+    // Try to import data
+    let db = app_state.db.lock().unwrap();
+    match db.manual_import_from_path(&path) {
+        Ok(_) => Ok(Response {
+            success: true,
+            message: format!("Successfully imported data from {}", path),
+            data: None,
+        }),
+        Err(e) => Err(format!("Failed to import data: {}", e)),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -156,9 +191,32 @@ fn main() {
             get_settings,
             save_settings,
             get_download_directory,
-            create_directory
+            create_directory,
+            import_from_file
         ])
         .setup(|app| {
+            // Copy database from app directory if it exists
+            if let Ok(app_dir) = std::env::current_dir() {
+                let source_db = app_dir.join("permavid_local.sqlite");
+                if source_db.exists() {
+                    let target_dir = app.path_resolver().app_data_dir().expect("Failed to get app data directory");
+                    if !target_dir.exists() {
+                        std::fs::create_dir_all(&target_dir).expect("Failed to create app data directory");
+                    }
+                    let target_db = target_dir.join("permavid_local.sqlite");
+                    
+                    // Only copy if target doesn't exist yet
+                    if !target_db.exists() {
+                        println!("Found database in application directory, copying to app data directory");
+                        if let Err(e) = fs::copy(&source_db, &target_db) {
+                            println!("Failed to copy database: {}", e);
+                        } else {
+                            println!("Successfully copied database to app data directory");
+                        }
+                    }
+                }
+            }
+            
             // Initialize database
             let db = Database::new(&app.handle()).expect("Failed to initialize database");
             // Store database in app state

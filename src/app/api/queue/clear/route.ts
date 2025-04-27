@@ -49,4 +49,8 @@ export async function DELETE(request: NextRequest) {
     console.error(`Error processing clear request for type ${type}:`, error);
     return NextResponse.json({ error: 'Internal Server Error during clear process' }, { status: 500 });
   }
-} 
+}
+
+// Add these export configurations for static export compatibility
+export const dynamic = 'force-dynamic';
+export const revalidate = 0; // No cache, always fetch fresh data 

@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cancelItem } from '@/lib/queue';
 
+// Add these export configurations for static export compatibility
+export const dynamic = 'force-dynamic';
+export const revalidate = 0; // No cache, always fetch fresh data 
+
 // DELETE request to cancel a specific item ID
 export async function DELETE(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const { id: itemId } = params;
+  const itemId = params.id;
 
   if (!itemId) {
     return NextResponse.json({ error: 'Item ID is required' }, { status: 400 });

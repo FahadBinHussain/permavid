@@ -13,7 +13,8 @@ import {
   getSettings,
   saveSettings,
   openExternalLink,
-  getDownloadDirectory
+  getDownloadDirectory,
+  importFromFile
 } from '@/lib/tauri-api';
 
 // Define context value type
@@ -31,6 +32,7 @@ interface TauriContextType {
   saveAppSettings: (settings: AppSettings) => Promise<void>;
   openLink: (url: string) => Promise<void>;
   getDefaultDownloadDir: () => Promise<string>;
+  importFromFile: (path: string) => Promise<void>;
 }
 
 // Create context with default values
@@ -48,6 +50,7 @@ const TauriContext = createContext<TauriContextType>({
   saveAppSettings: async () => {},
   openLink: async () => {},
   getDefaultDownloadDir: async () => "",
+  importFromFile: async () => {},
 });
 
 // Provider component
@@ -110,10 +113,14 @@ export function TauriProvider({ children }: { children: ReactNode }) {
 
   const getAppSettings = async () => {
     try {
+      console.log("Fetching application settings...");
       const appSettings = await getSettings();
-      setSettings(appSettings);
+      console.log("Settings received:", appSettings);
+      setSettings(appSettings || {});
     } catch (err) {
       console.error("Error fetching settings:", err);
+      // Ensure we always have a valid settings object
+      setSettings({});
     }
   };
 
@@ -133,6 +140,17 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     return "";
   };
 
+  const handleImportFromFile = async (path: string) => {
+    try {
+      await importFromFile(path);
+      // Refresh data after import
+      await fetchQueueItems();
+      await getAppSettings();
+    } catch (err) {
+      console.error("Error importing data:", err);
+    }
+  };
+
   return (
     <TauriContext.Provider value={{
       isReady,
@@ -148,6 +166,7 @@ export function TauriProvider({ children }: { children: ReactNode }) {
       saveAppSettings,
       openLink,
       getDefaultDownloadDir,
+      importFromFile: handleImportFromFile,
     }}>
       {children}
     </TauriContext.Provider>

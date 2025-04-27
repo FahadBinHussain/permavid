@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 use uuid::Uuid;
 use chrono::Utc;
+use std::path::Path;
 
 // Shared database connection
 pub struct Database {
@@ -99,9 +100,17 @@ impl Database {
             [],
         )?;
         
-        Ok(Self {
+        // Check if we need to import old data
+        let database = Self {
             conn: Arc::new(Mutex::new(conn)),
-        })
+        };
+
+        // Try to import data from the old database if present
+        database.import_old_data(app_handle).unwrap_or_else(|e| {
+            println!("Note: Could not import old data: {}", e);
+        });
+        
+        Ok(database)
     }
     
     pub fn add_video(&self, video: &Video) -> Result<i64> {
@@ -287,6 +296,20 @@ impl Database {
     
     pub fn get_settings(&self) -> Result<AppSettings> {
         let conn = self.conn.lock().unwrap();
+        
+        // First check if the settings table exists
+        if !self.table_exists(&conn, "settings") {
+            // Return default settings if the table doesn't exist
+            return Ok(AppSettings {
+                filemoon_api_key: None,
+                files_vc_api_key: None,
+                download_directory: None,
+                delete_after_upload: None,
+                auto_upload: None,
+                upload_target: None,
+            });
+        }
+        
         let mut settings = AppSettings {
             filemoon_api_key: None,
             files_vc_api_key: None,
@@ -296,12 +319,25 @@ impl Database {
             upload_target: None,
         };
         
-        let mut stmt = conn.prepare("SELECT key, value FROM settings")?;
-        let rows = stmt.query_map([], |row| {
+        let mut stmt = match conn.prepare("SELECT key, value FROM settings") {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                println!("Error preparing settings query: {}", e);
+                return Ok(settings); // Return default settings on error
+            }
+        };
+        
+        let rows = match stmt.query_map([], |row| {
             let key: String = row.get(0)?;
             let value: String = row.get(1)?;
             Ok((key, value))
-        })?;
+        }) {
+            Ok(rows) => rows,
+            Err(e) => {
+                println!("Error querying settings: {}", e);
+                return Ok(settings); // Return default settings on error
+            }
+        };
         
         for row_result in rows {
             if let Ok((key, value)) = row_result {
@@ -361,5 +397,227 @@ impl Database {
             params![key, value, value],
         )?;
         Ok(())
+    }
+
+    // Function to import data from old database or storage
+    fn import_old_data(&self, app_handle: &AppHandle) -> Result<()> {
+        // Try to locate previous database file
+        // First check the app data directory (for previous Tauri/Electron versions)
+        let app_dir = app_handle.path_resolver().app_data_dir().expect("Failed to get app data directory");
+        let old_db_path = app_dir.join("old_permavid_local.sqlite");
+        
+        // Also check the user's home directory (common location for Electron apps)
+        let home_dir = dirs::home_dir().unwrap_or_default();
+        let electron_db_paths = vec![
+            home_dir.join(".permavid").join("permavid_local.sqlite"),
+            home_dir.join("AppData").join("Roaming").join("permavid").join("permavid_local.sqlite"),
+            home_dir.join(".config").join("permavid").join("permavid_local.sqlite")
+        ];
+        
+        // Check current directory too
+        let current_dir_path = std::env::current_dir().unwrap_or_default().join("permavid_local.sqlite");
+        
+        // Try to open and import from old database
+        let mut imported = false;
+        
+        // First try the specific old db path
+        if old_db_path.exists() {
+            if let Ok(_) = self.import_from_db_file(&old_db_path) {
+                imported = true;
+                println!("Successfully imported data from old database");
+            }
+        }
+        
+        // Then try common Electron paths
+        if !imported {
+            for path in electron_db_paths {
+                if path.exists() {
+                    if let Ok(_) = self.import_from_db_file(&path) {
+                        imported = true;
+                        println!("Successfully imported data from Electron database: {:?}", path);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Finally check current directory
+        if !imported && current_dir_path.exists() {
+            if let Ok(_) = self.import_from_db_file(&current_dir_path) {
+                imported = true;
+                println!("Successfully imported data from current directory database");
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn import_from_db_file(&self, db_path: &std::path::Path) -> Result<()> {
+        // Connect to the old database
+        let old_conn = Connection::open(db_path)?;
+        let mut dest_conn = self.conn.lock().unwrap();
+        
+        // Start a transaction
+        let transaction = dest_conn.transaction()?;
+        
+        // Import videos if the table exists
+        if self.table_exists(&old_conn, "videos") {
+            let mut stmt = old_conn.prepare("SELECT title, url, local_path, thumbnail, status, created_at FROM videos")?;
+            let video_iter = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?, // title
+                    row.get::<_, String>(1)?, // url
+                    row.get::<_, Option<String>>(2)?, // local_path
+                    row.get::<_, Option<String>>(3)?, // thumbnail
+                    row.get::<_, String>(4)?, // status
+                    row.get::<_, String>(5)?, // created_at
+                ))
+            })?;
+            
+            for video_result in video_iter {
+                if let Ok((title, url, local_path, thumbnail, status, created_at)) = video_result {
+                    transaction.execute(
+                        "INSERT OR IGNORE INTO videos (title, url, local_path, thumbnail, status, created_at) 
+                         VALUES (?, ?, ?, ?, ?, ?)",
+                        params![title, url, local_path, thumbnail, status, created_at],
+                    )?;
+                }
+            }
+        }
+        
+        // Import queue items if the table exists
+        if self.table_exists(&old_conn, "queue") {
+            // Try to import with new schema first
+            let columns = "id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at";
+            let mut stmt = match old_conn.prepare(&format!("SELECT {} FROM queue", columns)) {
+                Ok(stmt) => stmt,
+                Err(_) => {
+                    // If new schema fails, try with a simpler old schema and adapt
+                    println!("Trying alternate schema for queue import");
+                    old_conn.prepare("SELECT id, url, status, message, title, NULL, NULL, NULL, NULL, CAST(strftime('%s') * 1000 as INTEGER), CAST(strftime('%s') * 1000 as INTEGER) FROM queue")?
+                }
+            };
+            
+            let now = Utc::now().timestamp_millis();
+            let item_iter = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?, // id
+                    row.get::<_, String>(1)?, // url
+                    row.get::<_, String>(2)?, // status
+                    row.get::<_, Option<String>>(3)?, // message
+                    row.get::<_, Option<String>>(4)?, // title
+                    row.get::<_, Option<String>>(5)?, // filemoon_url
+                    row.get::<_, Option<String>>(6)?, // files_vc_url
+                    row.get::<_, Option<i32>>(7)?, // encoding_progress
+                    row.get::<_, Option<String>>(8)?, // thumbnail_url
+                    row.get::<_, Option<i64>>(9).unwrap_or(Some(now)), // added_at
+                    row.get::<_, Option<i64>>(10).unwrap_or(Some(now)), // updated_at
+                ))
+            })?;
+            
+            for item_result in item_iter {
+                if let Ok((id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at)) = item_result {
+                    transaction.execute(
+                        "INSERT OR IGNORE INTO queue (id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at) 
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        params![id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at],
+                    )?;
+                }
+            }
+        }
+        
+        // Import settings if the table exists
+        if self.table_exists(&old_conn, "settings") {
+            let mut stmt = old_conn.prepare("SELECT key, value FROM settings")?;
+            let settings_iter = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?, // key
+                    row.get::<_, String>(1)?, // value
+                ))
+            })?;
+            
+            for setting_result in settings_iter {
+                if let Ok((key, value)) = setting_result {
+                    transaction.execute(
+                        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                        params![key, value],
+                    )?;
+                }
+            }
+        }
+        
+        // Also migrate old video data to new queue format if needed
+        if self.table_exists(&old_conn, "videos") && !self.has_queue_data(&transaction)? {
+            // No queue data yet, so let's migrate videos to queue
+            let mut stmt = old_conn.prepare(
+                "SELECT title, url, local_path, thumbnail, status, created_at FROM videos 
+                 WHERE status IN ('downloaded', 'completed')"
+            )?;
+            
+            let now = Utc::now().timestamp_millis();
+            let video_iter = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?, // title
+                    row.get::<_, String>(1)?, // url
+                    row.get::<_, Option<String>>(2)?, // local_path
+                    row.get::<_, Option<String>>(3)?, // thumbnail
+                    row.get::<_, String>(4)?, // status
+                    row.get::<_, String>(5)?, // created_at
+                ))
+            })?;
+            
+            for video_result in video_iter {
+                if let Ok((title, url, _local_path, thumbnail, status, _created_at)) = video_result {
+                    let id = Uuid::new_v4().to_string();
+                    let queue_status = if status == "downloaded" { "completed" } else { &status };
+                    
+                    transaction.execute(
+                        "INSERT INTO queue (id, url, status, message, title, thumbnail_url, added_at, updated_at) 
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        params![
+                            id, 
+                            url, 
+                            queue_status, 
+                            "Migrated from old database", 
+                            title, 
+                            thumbnail, 
+                            now, 
+                            now
+                        ],
+                    )?;
+                }
+            }
+        }
+        
+        // Commit all imported data
+        transaction.commit()?;
+        Ok(())
+    }
+    
+    fn table_exists(&self, conn: &Connection, table_name: &str) -> bool {
+        let query = format!(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='{}'",
+            table_name
+        );
+        
+        match conn.query_row(&query, [], |_| Ok(())) {
+            Ok(_) => true,
+            Err(_) => false,
+        }
+    }
+    
+    fn has_queue_data(&self, transaction: &rusqlite::Transaction) -> Result<bool> {
+        let count: i64 = transaction.query_row("SELECT COUNT(*) FROM queue", [], |row| row.get(0))?;
+        Ok(count > 0)
+    }
+
+    // Method for manual import from a specific path - called via Tauri command
+    pub fn manual_import_from_path(&self, path: &str) -> Result<()> {
+        let db_path = Path::new(path);
+        if !db_path.exists() {
+            return Err(rusqlite::Error::InvalidPath(format!("File does not exist: {}", path).into()));
+        }
+        
+        self.import_from_db_file(db_path)
     }
 } 

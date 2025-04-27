@@ -64,4 +64,8 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json({ error: 'Internal Server Error during settings update' }, { status: 500 });
   }
-} 
+}
+
+// Add these export configurations for static export compatibility
+export const dynamic = 'force-dynamic';
+export const revalidate = 0; // No cache, always fetch fresh data 

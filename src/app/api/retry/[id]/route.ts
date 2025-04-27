@@ -1,12 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { retryFailedDownloadOrUpload } from '@/lib/queue';
 
+// Add these export configurations for static export compatibility
+export const dynamic = 'force-dynamic';
+export const revalidate = 0; // No cache, always fetch fresh data
+
 // POST request to retry a failed item (if retryable)
 export async function POST(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  const { id: itemId } = params;
+  const itemId = params.id;
 
   if (!itemId) {
     return NextResponse.json({ error: 'Item ID is required' }, { status: 400 });

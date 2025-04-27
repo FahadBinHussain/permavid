@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { addToQueue, QueueItem } from '@/lib/queue'; // Import type too
 
+// Add these export configurations for static export compatibility
+export const dynamic = 'force-dynamic';
+export const revalidate = 0; // No cache, always fetch fresh data
+
 // Remove unused imports related to direct download
 // import fs from 'fs/promises';
 // import path from 'path';

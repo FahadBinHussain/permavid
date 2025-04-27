@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import React from 'react';
+import { getSettingsDirectly, createEmptySettings } from '@/lib/settings-helper';
 
 // --- Add SVG Icons ---
 const icons: { [key: string]: React.JSX.Element } = {
@@ -82,7 +83,7 @@ interface AppSettings {
     download_directory?: string;
     delete_after_upload?: string; // Store as string 'true'/'false'
     auto_upload?: string; // Store as string 'true'/'false'
-    upload_target?: 'filemoon' | 'files_vc' | 'both'; // Add upload target preference
+    upload_target?: 'filemoon' | 'files_vc' | 'both' | string; // Add string type to make it compatible
 }
 
 // --- Add TypeScript definition for the exposed Electron API --- 
@@ -296,25 +297,76 @@ export default function Home() {
   // --- Fetch Queue and Settings ---
   const fetchQueue = useCallback(async () => {
     try {
-      const response = await fetch('/api/queue');
-      if (!response.ok) throw new Error('Failed to fetch queue');
-      const data: QueueItem[] = await response.json();
-      setQueue(data);
+      console.log('Attempting to fetch queue...');
+      
+      // Add a timeout to the fetch request to prevent hanging
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10-second timeout
+      
+      try {
+        const response = await fetch('/api/queue', { 
+          signal: controller.signal,
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          }
+        });
+        
+        clearTimeout(timeoutId); // Clear the timeout if request completes
+        
+        console.log('Queue fetch response status:', response.status);
+        
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => 'No error details available');
+          console.error(`API error response (${response.status}):`, errorText);
+          throw new Error(`Failed to fetch queue: Server responded with ${response.status}`);
+        }
+        
+        // Parse the JSON safely
+        let data: QueueItem[];
+        try {
+          data = await response.json();
+        } catch (jsonError) {
+          console.error('Failed to parse queue JSON response:', jsonError);
+          throw new Error('Invalid response format from queue API');
+        }
+        
+        console.log(`Successfully fetched queue with ${data.length} items`);
+        setQueue(data);
+      } finally {
+        clearTimeout(timeoutId); // Ensure timeout is cleared even if an error occurs
+      }
     } catch (fetchError: any) {
+      // More detailed error logging
       console.error('Error fetching queue:', fetchError);
-      // Optionally set an error state for queue fetching
+      
+      // Check for specific error types
+      if (fetchError.name === 'AbortError') {
+        console.error('Queue fetch request timed out after 10 seconds');
+      } else if (fetchError instanceof TypeError && fetchError.message.includes('Failed to fetch')) {
+        console.error('Network error when fetching queue - API might be unavailable');
+      }
+      
+      // We don't set an error state here to avoid UI disruption during periodic fetching
+      // But we could add an optional queue fetch status indicator if needed
     }
   }, []); // Empty dependency array as fetchQueue itself doesn't depend on changing state
 
   const fetchSettings = useCallback(async () => {
     try {
-        const response = await fetch('/api/settings');
-        if (!response.ok) throw new Error('Failed to fetch settings');
-        const data: AppSettings = await response.json();
-        setSettings(data);
+      console.log('Home: Fetching settings via direct helper...');
+      
+      // Use our robust direct settings fetcher instead of the API
+      const data = await getSettingsDirectly();
+      console.log('Home: Settings received via direct helper:', data);
+      
+      // Ensure we always have a valid settings object
+      setSettings(data || createEmptySettings());
     } catch (fetchError: any) {
-        console.error('Error fetching settings:', fetchError);
-        setError('Failed to load application settings.');
+      console.error('Error fetching settings (with stack):', fetchError);
+      setError('Failed to load application settings.');
+      // Set empty settings as fallback
+      setSettings(createEmptySettings());
     }
   }, []); // Also no dependencies
 

@@ -82,12 +82,22 @@ export async function clearCompletedItems(statusTypes: string[]) {
 export async function getSettings() {
   try {
     const response = await invoke('get_settings');
+    
+    // Add debug logging
+    console.log('Settings response:', response);
+    
     if (typeof response === 'object' && response !== null && 'data' in response) {
+      // Ensure we're returning a valid object, even if data is null or undefined
       return (response as any).data || {};
     }
+    
+    console.warn('Unexpected response format from get_settings:', response);
     return {};
   } catch (error) {
+    // More detailed error logging
     console.error('Error fetching settings from Tauri:', error);
+    
+    // Return an empty object instead of throwing
     return {};
   }
 }
@@ -128,4 +138,14 @@ export async function openExternalLink(url: string) {
 // Helper function to check if we're running in a Tauri environment
 export function isTauri() {
   return window !== undefined && window.__TAURI__ !== undefined;
+}
+
+// Function to manually import data from a specific file
+export async function importFromFile(path: string) {
+  try {
+    await invoke('import_from_file', { path });
+  } catch (error) {
+    console.error('Error importing from file:', error);
+    throw error;
+  }
 } 

@@ -122,7 +122,7 @@ try {
 const stmtAddItem = db.prepare(
   'INSERT INTO queue (id, url, status, added_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(url) DO NOTHING'
 );
-const stmtGetQueue = db.prepare('SELECT * FROM queue ORDER BY added_at DESC');
+const stmtGetQueue = db.prepare("SELECT * FROM queue WHERE status != 'encoded' ORDER BY added_at DESC");
 const stmtGetNextQueued = db.prepare(
   "SELECT * FROM queue WHERE status = 'queued' ORDER BY added_at ASC LIMIT 1"
 );
@@ -258,6 +258,7 @@ export function addToQueue(url: string): { success: boolean; message: string; it
 
 export function getQueue(): QueueItem[] {
   try {
+    // Use the prepared statement that already excludes encoded items
     return stmtGetQueue.all() as QueueItem[];
   } catch (error: any) {
     console.error('Failed to fetch queue from DB:', error);
@@ -1302,7 +1303,7 @@ async function pollEncodingStatus() {
  */
 export function getActiveQueue(): QueueItem[] {
   try {
-    // Exclude final states
+    // Exclude final states - now also excludes 'encoded' status so encoded items are only in gallery
     return db.prepare(
         "SELECT * FROM queue WHERE status NOT IN ('encoded', 'failed', 'cancelled') ORDER BY added_at DESC"
     ).all() as QueueItem[];

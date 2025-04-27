@@ -8,9 +8,9 @@ export const revalidate = 0; // No cache, always fetch fresh data
 // POST request to retry a failed item (if retryable)
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  const itemId = params.id;
+  { params }: { params: Promise<{ id: string }> }
+): Promise<NextResponse> {
+  const { id: itemId } = await params;
 
   if (!itemId) {
     return NextResponse.json({ error: 'Item ID is required' }, { status: 400 });

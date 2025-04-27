@@ -24,6 +24,13 @@ export interface AppSettings {
   upload_target?: string;
 }
 
+// Define the expected structure of the response from the trigger_upload command
+interface UploadResponse {
+  success: boolean;
+  message: string;
+  data?: string; // Assuming data contains the item ID on success
+}
+
 // Queue related functions
 export async function getQueueItems() {
   try {
@@ -148,4 +155,77 @@ export async function importFromFile(path: string) {
     console.error('Error importing from file:', error);
     throw error;
   }
-} 
+}
+
+// --- ADDED: Function to retry an item ---
+export async function retryItem(id: string) {
+  try {
+    // Result should be { success: boolean, message: string, data: null }
+    const response: any = await invoke('retry_item', { id }); 
+    if (!response || !response.success) {
+      throw new Error(response?.message || 'Failed to retry item in backend.');
+    }
+    // Optionally return the success message
+    return response.message;
+  } catch (error) {
+    console.error('Error retrying item via Tauri:', error);
+    throw error; // Re-throw to be caught by UI
+  }
+}
+// --- END ADDED ---
+
+// --- ADDED: Function to trigger upload via Tauri --- 
+export async function triggerUpload(id: string): Promise<UploadResponse> {
+  try {
+    // Result should match the Response<String> structure from Rust
+    const response: UploadResponse = await invoke('trigger_upload', { id }); 
+    // No need to check success here, let the caller handle the full response
+    return response;
+  } catch (error) {
+    console.error('Error triggering upload via Tauri:', error);
+    // Ensure a consistent error response structure
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : 'Unknown error triggering upload',
+    };
+  }
+}
+// --- END ADDED --- 
+
+// --- ADDED: Function to cancel an item via Tauri ---
+export async function cancelItem(id: string): Promise<{success: boolean, message: string}> {
+  try {
+    // Response structure matches Rust Response<()> which becomes { success, message, data: null }
+    const response: any = await invoke('cancel_item', { id });
+    if (!response || !response.success) {
+      throw new Error(response?.message || 'Failed to cancel item in backend.');
+    }
+    return { success: true, message: response.message };
+  } catch (error) {
+    console.error('Error cancelling item via Tauri:', error);
+    return { 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Unknown error cancelling item' 
+    };
+  }
+}
+// --- END ADDED --- 
+
+// --- ADDED: Function to restart encoding via Tauri ---
+export async function restartEncoding(id: string): Promise<{success: boolean, message: string}> {
+  try {
+    // Response structure matches Rust Response<()> which becomes { success, message, data: null }
+    const response: any = await invoke('restart_encoding', { id });
+    if (!response || !response.success) {
+      throw new Error(response?.message || 'Failed to restart encoding in backend.');
+    }
+    return { success: true, message: response.message };
+  } catch (error) {
+    console.error('Error restarting encoding via Tauri:', error);
+    return { 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Unknown error restarting encoding' 
+    };
+  }
+}
+// --- END ADDED --- 

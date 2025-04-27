@@ -14,7 +14,11 @@ import {
   saveSettings,
   openExternalLink,
   getDownloadDirectory,
-  importFromFile
+  importFromFile,
+  retryItem,
+  triggerUpload,
+  cancelItem,
+  restartEncoding
 } from '@/lib/tauri-api';
 
 // Define context value type
@@ -33,6 +37,10 @@ interface TauriContextType {
   openLink: (url: string) => Promise<void>;
   getDefaultDownloadDir: () => Promise<string>;
   importFromFile: (path: string) => Promise<void>;
+  retryItem: (id: string) => Promise<void>;
+  triggerUpload: (id: string) => Promise<{success: boolean, message: string}>;
+  cancelItem: (id: string) => Promise<{success: boolean, message: string}>;
+  restartEncoding: (id: string) => Promise<{success: boolean, message: string}>;
 }
 
 // Create context with default values
@@ -51,6 +59,10 @@ const TauriContext = createContext<TauriContextType>({
   openLink: async () => {},
   getDefaultDownloadDir: async () => "",
   importFromFile: async () => {},
+  retryItem: async () => {},
+  triggerUpload: async () => ({success: false, message: 'Provider not ready'}),
+  cancelItem: async () => ({success: false, message: 'Provider not ready'}),
+  restartEncoding: async () => ({success: false, message: 'Provider not ready'})
 });
 
 // Provider component
@@ -151,6 +163,44 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const handleRetryItem = async (id: string) => {
+    try {
+      await retryItem(id);
+      // Refresh queue data after retry
+      await fetchQueueItems();
+    } catch (err) {
+      console.error(`Error retrying item ${id}:`, err);
+      // Optionally show an error message to the user
+    }
+  };
+
+  const handleTriggerUpload = async (id: string) => {
+    // Invoke the Tauri command via the API wrapper
+    const result = await triggerUpload(id);
+    // Refresh queue data after upload attempt
+    await fetchQueueItems(); 
+    // Return the result so the UI can display messages/errors
+    return result; 
+  };
+
+  const handleCancelItem = async (id: string) => {
+    // Invoke the Tauri command via the API wrapper
+    const result = await cancelItem(id);
+    // Refresh queue data after cancel attempt
+    await fetchQueueItems(); 
+    // Return the result so the UI can display messages/errors
+    return result; 
+  };
+
+  const handleRestartEncoding = async (id: string) => {
+    // Invoke the Tauri command via the API wrapper
+    const result = await restartEncoding(id);
+    // Refresh queue data after restart attempt
+    await fetchQueueItems(); 
+    // Return the result so the UI can display messages/errors
+    return result; 
+  };
+
   return (
     <TauriContext.Provider value={{
       isReady,
@@ -167,6 +217,10 @@ export function TauriProvider({ children }: { children: ReactNode }) {
       openLink,
       getDefaultDownloadDir,
       importFromFile: handleImportFromFile,
+      retryItem: handleRetryItem,
+      triggerUpload: handleTriggerUpload,
+      cancelItem: handleCancelItem,
+      restartEncoding: handleRestartEncoding
     }}>
       {children}
     </TauriContext.Provider>

@@ -35,6 +35,7 @@ pub struct QueueItem {
     pub thumbnail_url: Option<String>,
     pub added_at: Option<i64>,
     pub updated_at: Option<i64>,
+    pub local_path: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -262,6 +263,7 @@ impl Database {
                 thumbnail_url: row.get(8)?,
                 added_at: row.get(9)?,
                 updated_at: row.get(10)?,
+                local_path: None,
             })
         })?;
         
@@ -418,33 +420,34 @@ impl Database {
         let current_dir_path = std::env::current_dir().unwrap_or_default().join("permavid_local.sqlite");
         
         // Try to open and import from old database
-        let mut imported = false;
+        // let mut imported = false; // <-- Remove unused variable
         
         // First try the specific old db path
         if old_db_path.exists() {
             if let Ok(_) = self.import_from_db_file(&old_db_path) {
-                imported = true;
+                // imported = true;
                 println!("Successfully imported data from old database");
             }
         }
         
         // Then try common Electron paths
-        if !imported {
+        // if !imported { // <-- No need to check imported flag anymore
             for path in electron_db_paths {
                 if path.exists() {
                     if let Ok(_) = self.import_from_db_file(&path) {
-                        imported = true;
+                        // imported = true;
                         println!("Successfully imported data from Electron database: {:?}", path);
                         break;
                     }
                 }
             }
-        }
+        // }
         
         // Finally check current directory
-        if !imported && current_dir_path.exists() {
+        // if !imported && current_dir_path.exists() { // <-- No need to check imported flag
+         if current_dir_path.exists() { // Simplified check
             if let Ok(_) = self.import_from_db_file(&current_dir_path) {
-                imported = true;
+                // imported = true;
                 println!("Successfully imported data from current directory database");
             }
         }
@@ -620,4 +623,38 @@ impl Database {
         
         self.import_from_db_file(db_path)
     }
+    
+    // --- ADDED: Get a single item by ID ---
+    pub fn get_item_by_id(&self, id: &str) -> Result<Option<QueueItem>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at 
+             FROM queue 
+             WHERE id = ?"
+        )?;
+        
+        let item_result = stmt.query_row(params![id], |row| {
+            Ok(QueueItem {
+                id: Some(row.get(0)?),
+                url: row.get(1)?,
+                status: row.get(2)?,
+                message: row.get(3)?,
+                title: row.get(4)?,
+                filemoon_url: row.get(5)?,
+                files_vc_url: row.get(6)?,
+                encoding_progress: row.get(7)?,
+                thumbnail_url: row.get(8)?,
+                added_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                local_path: None,
+            })
+        });
+
+        match item_result {
+            Ok(item) => Ok(Some(item)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None), // Handle not found gracefully
+            Err(e) => Err(e), // Propagate other errors
+        }
+    }
+    // --- END ADDED ---
 } 

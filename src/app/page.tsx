@@ -1,9 +1,26 @@
 'use client'; // Required for useState and event handlers
 
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Link from 'next/link';
-import React from 'react';
-import { getSettingsDirectly, createEmptySettings } from '@/lib/settings-helper';
+import { 
+  ArrowDownTrayIcon, 
+  ArrowUpTrayIcon, 
+  XCircleIcon, 
+  CheckCircleIcon, 
+  ClockIcon, 
+  ExclamationTriangleIcon, 
+  ArrowPathIcon, // For retry
+  Cog6ToothIcon, // For settings
+  TrashIcon, // For clear
+  LinkIcon, // For links
+  ComputerDesktopIcon, // For encoding
+  WifiIcon // For transferring
+} from '@heroicons/react/24/solid';
+import { invoke } from '@tauri-apps/api/tauri'; // Import invoke
+import { open } from '@tauri-apps/api/shell'; // Import open for external links
+import { useTauri } from '@/app/tauri-integration'; // Corrected import path
+import { QueueItem, AppSettings } from '@/lib/tauri-api'; // <-- Import types
+import { createEmptySettings } from '@/lib/settings-helper'; // Import factory function
 
 // --- Add SVG Icons ---
 const icons: { [key: string]: React.JSX.Element } = {
@@ -61,31 +78,6 @@ const icons: { [key: string]: React.JSX.Element } = {
   ),
 };
 
-// Define the structure for a queue item (matching backend)
-interface QueueItem {
-  id: string;
-  url: string;
-  status: 'queued' | 'downloading' | 'completed' | 'failed' | 'uploading' | 'uploaded' | 'transferring' | 'cancelled' | 'encoding' | 'encoded';
-  message?: string;
-  title?: string;
-  filemoon_url?: string; // Stores the filecode
-  files_vc_url?: string; // Stores the Files.vc URL
-  encoding_progress?: number | null; // Add encoding progress field
-  thumbnail_url?: string; // Add thumbnail URL
-  added_at?: number; // Make sure added_at is available for sorting
-  updated_at?: number; // Ensure updated_at is here if needed by UI (e.g. for sorting, though not currently used)
-}
-
-// Define structure for settings
-interface AppSettings {
-    filemoon_api_key?: string;
-    files_vc_api_key?: string; // Add Files.vc API key
-    download_directory?: string;
-    delete_after_upload?: string; // Store as string 'true'/'false'
-    auto_upload?: string; // Store as string 'true'/'false'
-    upload_target?: 'filemoon' | 'files_vc' | 'both' | string; // Add string type to make it compatible
-}
-
 // --- Add TypeScript definition for the exposed Electron API --- 
 declare global {
     interface Window {
@@ -121,55 +113,55 @@ const QueueListItem: React.FC<QueueItemProps> = ({
   onRestartEncoding,
   onOpenLink
 }) => {
+  // Helper function to safely call handlers with ID
+  const handleAction = (action: (id: string) => void) => {
+    if (item.id) { // Check if ID exists
+      action(item.id);
+    } else {
+      console.error('Attempted action on item without ID:', item);
+    }
+  };
+  
   return (
-    <li key={item.id} className="px-4 py-5 sm:px-6"> {/* Increased py */}
-      <div className="flex items-start space-x-4"> {/* Use items-start for alignment with thumbnail */} 
-          {/* Thumbnail (Optional) */}
+    <li key={item.id ?? item.url} className="px-4 py-5 sm:px-6">
+      <div className="flex items-start space-x-4">
           {item.thumbnail_url && (
             <div className="flex-shrink-0">
               <img 
-                className="h-12 w-20 rounded object-cover" // Adjust size as needed
+                className="h-12 w-20 rounded object-cover"
                 src={item.thumbnail_url} 
                 alt="Video thumbnail"
-                onError={(e) => { e.currentTarget.style.display = 'none'; }} // Hide on error
+                onError={(e) => { e.currentTarget.style.display = 'none'; }}
               />
             </div>
           )}
 
-          {/* Main Content Area */}
           <div className="flex-1 min-w-0"> 
-              {/* Top Row: Title and Status Badge */}
-              <div className="flex items-center justify-between space-x-2 mb-1"> {/* Added mb-1 */} 
-                {/* Make title take remaining space and truncate */}
-                <div className="text-base font-semibold text-indigo-700 truncate flex-1 min-w-0" title={item.title || item.url}> {/* Increased size/weight, changed color */} 
+              <div className="flex items-center justify-between space-x-2 mb-1">
+                <div className="text-base font-semibold text-indigo-700 truncate flex-1 min-w-0" title={item.title || item.url}>
                   {item.title || item.url}
                 </div>
-                {/* Keep status badge fixed size */} 
                 <div className="ml-2 flex-shrink-0 flex">
-                  <p className={`px-2 py-0.5 inline-flex items-center text-xs leading-5 font-semibold rounded-full ${ // Added py-0.5 and items-center
+                  <p className={`px-2 py-0.5 inline-flex items-center text-xs leading-5 font-semibold rounded-full ${
                     item.status === 'completed' ? 'bg-green-100 text-green-800' : 
                     item.status === 'failed' ? 'bg-red-100 text-red-800' : 
                     item.status === 'downloading' ? 'bg-yellow-100 text-yellow-800' : 
                     item.status === 'uploading' ? 'bg-blue-100 text-blue-800' :
                     item.status === 'cancelled' ? 'bg-gray-100 text-gray-800' :
-                    item.status === 'transferring' ? 'bg-blue-100 text-blue-800' : // Keep color for transferring
+                    item.status === 'transferring' ? 'bg-blue-100 text-blue-800' :
                     item.status === 'encoding' ? 'bg-cyan-100 text-cyan-800' :
-                    item.status === 'encoded' ? 'bg-indigo-100 text-indigo-800' : // More distinct color for encoded
-                    'bg-purple-100 text-purple-800' // Default for queued
+                    item.status === 'encoded' ? 'bg-indigo-100 text-indigo-800' :
+                    'bg-purple-100 text-purple-800'
                   }`}> 
-                    {icons[item.status] || null} {/* Add icon here */} 
+                    {icons[item.status] || null} 
                     {item.status}
                   </p>
                 </div>
               </div>
-              {/* Bottom Row: URL/Message and Action Button */} 
               <div className="mt-2 sm:flex sm:justify-between sm:items-center">
-                {/* Info Section (URL/Message) - Allow shrinking and truncating */} 
-                <div className="sm:flex-1 min-w-0 mr-4"> {/* Add min-w-0 here */} 
-                  {/* Display URL when title exists */} 
+                <div className="sm:flex-1 min-w-0 mr-4">
                   {item.title && <p className="text-sm text-gray-500 truncate block">{item.url}</p>} 
 
-                  {/* Display Message or Progress */} 
                   {item.status === 'downloading' && item.message?.startsWith('Downloading:') &&
                     <div className="flex items-center mt-1"> 
                       <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mr-2"> 
@@ -183,74 +175,63 @@ const QueueListItem: React.FC<QueueItemProps> = ({
                       </span> 
                     </div> 
                   } 
-                  {/* Show standard message for other states or if download message is not progress */} 
                   {(!(item.status === 'downloading' && item.message?.startsWith('Downloading:')) && item.message) && ( 
                      <p className="text-xs italic text-gray-400 truncate block mt-1">- {item.message}</p> 
                   )} 
                 </div> 
-                 {/* Action Button Section - Keep fixed size */} 
-                 <div className="mt-2 sm:mt-0 flex-shrink-0 flex items-center space-x-2"> {/* Added space-x-2 */} 
-                     {/* --- Add Cancel Button --- */} 
-                     {(item.status === 'queued' || item.status === 'downloading') && ( 
-                       <button 
-                         onClick={() => onCancel(item.id)} 
-                         disabled={cancellingItemId === item.id} // Disable button if this item is cancelling 
+                 <div className="mt-2 sm:mt-0 flex-shrink-0 flex items-center space-x-2">
+                     <button 
+                         onClick={() => handleAction(onCancel)}
+                         disabled={cancellingItemId === item.id}
                          className="px-2 py-1 text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed" 
                        > 
                          {cancellingItemId === item.id ? 'Cancelling...' : 'Cancel'} 
                        </button> 
-                     )} 
-                     {/* --- ADDED: Add Upload Button for 'completed' items --- */} 
                      {item.status === 'completed' && ( 
                        <button 
-                         onClick={() => onUpload(item.id)} 
-                         disabled={uploadingItemId === item.id} // Disable if this specific item is uploading 
+                         onClick={() => handleAction(onUpload)}
+                         disabled={uploadingItemId === item.id}
                          className="px-2 py-1 text-xs font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" 
                        > 
                          {uploadingItemId === item.id ? 'Uploading...' : 'Upload'} 
                        </button> 
                      )} 
-                     {/* Display Filemoon Link if available (uploaded, transferring, encoding, or encoded) */} 
                      {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.filemoon_url && ( 
                        <button 
-                         onClick={() => onOpenLink(item.filemoon_url)} 
+                         onClick={() => onOpenLink(item.filemoon_url)}
                          className="px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700" 
                        > 
                           View Link 
                        </button> 
                      )} 
-                     {/* Display Files.vc Link if available (uploaded, transferring, encoding, or encoded) */} 
                      {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.files_vc_url && ( 
                        <button 
-                         onClick={() => onOpenLink(item.files_vc_url)} 
+                         onClick={() => onOpenLink(item.files_vc_url)}
                          className="px-2 py-1 text-xs font-medium rounded-md text-white bg-green-600 hover:bg-green-700" 
                        > 
                           View Link 
                        </button> 
                      )} 
-                     {/* --- Add General Retry Button --- */} 
-                     {item.status === 'failed' && !item.filemoon_url && ( // Only show if failed *before* upload 
+                     {item.status === 'failed' && !item.filemoon_url && !item.files_vc_url && ( 
                        <button 
-                         onClick={() => onRetry(item.id)} 
+                         onClick={() => handleAction(onRetry)}
                          disabled={retryingItemId === item.id} 
                          className="px-2 py-1 text-xs font-medium rounded-md text-white bg-yellow-500 hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed" 
                        > 
                          {retryingItemId === item.id ? 'Retrying...' : 'Retry'} 
                        </button> 
                      )} 
-                     {/* --- Add Restart Encoding Button --- */} 
-                     {item.status === 'failed' && item.filemoon_url && ( // Only show restart if it failed *after* upload (has filemoon_url) 
+                     {item.status === 'failed' && item.filemoon_url && ( 
                        <button 
-                         onClick={() => onRestartEncoding(item.id)} 
+                         onClick={() => handleAction(onRestartEncoding)}
                          disabled={restartingItemId === item.id} 
                          className="px-2 py-1 text-xs font-medium rounded-md text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed" 
                        > 
                          {restartingItemId === item.id ? 'Restarting...' : 'Restart Encoding'} 
                        </button> 
                      )} 
-                     {/* Display Encoding Progress (if applicable) - Restore */} 
                      {item.status === 'encoding' && ( 
-                       <div className="w-24 bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 flex items-center"> {/* Removed ml-2 */} 
+                       <div className="w-24 bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 flex items-center">
                          <div 
                            className="bg-cyan-600 h-2.5 rounded-full" 
                            style={{ width: `${item.encoding_progress ?? 0}%` }} 
@@ -268,25 +249,38 @@ const QueueListItem: React.FC<QueueItemProps> = ({
 };
 
 export default function Home() {
+  // Use the Tauri context hook
+  const {
+    queueItems: contextQueue, // Use correct name: queueItems
+    settings: contextSettings, // Get settings from context
+    fetchQueueItems: tauriFetchQueue, // Use correct name: fetchQueueItems
+    getAppSettings: tauriFetchSettings, // Use correct name: getAppSettings
+    addToQueue: tauriAddToQueue,
+    clearItems: tauriClearItems,
+    retryItem: tauriRetryItem,
+    saveAppSettings: tauriSaveSettings, // Use correct name: saveAppSettings
+    triggerUpload: tauriTriggerUpload, // <-- Destructure the new upload function
+    cancelItem: tauriCancelItem, // <-- Destructure the new cancel function
+    restartEncoding: tauriRestartEncoding // <-- Destructure the new restart encoding function
+  } = useTauri();
+
   const [url, setUrl] = useState('');
   const [message, setMessage] = useState('');
-  const [isLoading, setIsLoading] = useState(false); // For adding URL
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [queue, setQueue] = useState<QueueItem[]>([]); // State for the queue
-  const [isClearing, setIsClearing] = useState(false); // State for clearing buttons
-  const [uploadingItemId, setUploadingItemId] = useState<string | null>(null); // Track which item is uploading
-  const [cancellingItemId, setCancellingItemId] = useState<string | null>(null); // Track which item is cancelling
-  const [restartingItemId, setRestartingItemId] = useState<string | null>(null); // Track which item is restarting encoding
-  const [retryingItemId, setRetryingItemId] = useState<string | null>(null); // Track which item is retrying failed download/upload
+  const [queue, setQueue] = useState<QueueItem[]>([]); // Use imported type
+  const [isClearing, setIsClearing] = useState(false);
+  const [uploadingItemId, setUploadingItemId] = useState<string | null>(null);
+  const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
+  const [restartingItemId, setRestartingItemId] = useState<string | null>(null);
+  const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
 
   // --- Settings State ---
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settings, setSettings] = useState<AppSettings>({});
+  const [settings, setSettings] = useState<AppSettings>(createEmptySettings()); // <-- Use imported type and factory
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
-  // --- UI State ---
   const [showClearDropdown, setShowClearDropdown] = useState(false);
-  // --- Filtering and Sorting State ---
   type FilterStatus = QueueItem['status'] | 'all';
   type SortKey = 'added_at_desc' | 'added_at_asc' | 'title_asc' | 'title_desc' | 'status';
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
@@ -294,142 +288,33 @@ export default function Home() {
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
   const [showSortDropdown, setShowSortDropdown] = useState(false);
 
-  // --- Fetch Queue and Settings ---
   const fetchQueue = useCallback(async () => {
     try {
-      console.log('Attempting to fetch queue...');
-      
-      // Add a timeout to the fetch request to prevent hanging
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10-second timeout
-      
-      try {
-        const response = await fetch('/api/queue', { 
-          signal: controller.signal,
-          headers: {
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
-          }
-        });
-        
-        clearTimeout(timeoutId); // Clear the timeout if request completes
-        
-        console.log('Queue fetch response status:', response.status);
-        
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => 'No error details available');
-          console.error(`API error response (${response.status}):`, errorText);
-          throw new Error(`Failed to fetch queue: Server responded with ${response.status}`);
-        }
-        
-        // Parse the JSON safely
-        let data: QueueItem[];
-        try {
-          data = await response.json();
-        } catch (jsonError) {
-          console.error('Failed to parse queue JSON response:', jsonError);
-          throw new Error('Invalid response format from queue API');
-        }
-        
-        console.log(`Successfully fetched queue with ${data.length} items`);
-        setQueue(data);
-      } finally {
-        clearTimeout(timeoutId); // Ensure timeout is cleared even if an error occurs
-      }
+      console.log('Home: Fetching queue via Tauri...');
+      await tauriFetchQueue(); // Call the destructured function
     } catch (fetchError: any) {
-      // More detailed error logging
-      console.error('Error fetching queue:', fetchError);
-      
-      // Check for specific error types
-      if (fetchError.name === 'AbortError') {
-        console.error('Queue fetch request timed out after 10 seconds');
-      } else if (fetchError instanceof TypeError && fetchError.message.includes('Failed to fetch')) {
-        console.error('Network error when fetching queue - API might be unavailable');
-      }
-      
-      // We don't set an error state here to avoid UI disruption during periodic fetching
-      // But we could add an optional queue fetch status indicator if needed
+      console.error('Home: Error fetching queue via Tauri context:', fetchError);
     }
-  }, []); // Empty dependency array as fetchQueue itself doesn't depend on changing state
+  }, [tauriFetchQueue]);
 
   const fetchSettings = useCallback(async () => {
     try {
-      console.log('Home: Fetching settings via API...');
-      
-      // Use standard fetch to get settings from the API route
-      const response = await fetch('/api/settings');
-      
-      if (!response.ok) {
-          const errorText = await response.text().catch(() => 'No error details available');
-          console.error(`API error response (${response.status}) fetching settings:`, errorText);
-          throw new Error(`Failed to fetch settings: Server responded with ${response.status}`);
-      }
-      
-      // Parse the JSON safely
-      let data: AppSettings;
-      try {
-          data = await response.json();
-      } catch (jsonError) {
-          console.error('Failed to parse settings JSON response:', jsonError);
-          throw new Error('Invalid response format from settings API');
-      }
-      
-      console.log('Home: Settings received via API:', JSON.stringify(data, null, 2));
-
-      // Enhanced settings validation and logging
-      if (!data || typeof data !== 'object') {
-        console.log('Home: Invalid settings format from API, using empty settings');
-        setSettings(createEmptySettings()); // Assuming createEmptySettings provides defaults
-        return;
-      }
-
-      // Validate each expected field exists with fallbacks
-      const validatedSettings: AppSettings = {
-        filemoon_api_key: data.filemoon_api_key || '',
-        files_vc_api_key: data.files_vc_api_key || '',
-        download_directory: data.download_directory || '',
-        delete_after_upload: typeof data.delete_after_upload === 'string' ? data.delete_after_upload : 'false',
-        auto_upload: typeof data.auto_upload === 'string' ? data.auto_upload : 'false',
-        upload_target: data.upload_target || 'filemoon'
-      };
-
-      console.log('Home: Using validated settings from API:', JSON.stringify(validatedSettings, null, 2));
-      setSettings(validatedSettings);
-
-      // For debugging - log to UI console for user to see
-      if (typeof window !== 'undefined' && window.console) {
-        console.info('%c📢 Settings loaded from API:', 'color: green; font-weight: bold;');
-        console.info('%c🔑 Filemoon API Key:', 'color: blue;',
-          validatedSettings.filemoon_api_key ?
-          validatedSettings.filemoon_api_key.substring(0, 4) + '****' :
-          '(empty)');
-        console.info('%c🔑 Files.vc API Key:', 'color: blue;',
-          validatedSettings.files_vc_api_key ?
-          validatedSettings.files_vc_api_key.substring(0, 4) + '****' :
-          '(empty)');
-        console.info('%c📁 Download Directory:', 'color: blue;', validatedSettings.download_directory || '(empty)');
-        console.info('%c🔄 Auto Upload:', 'color: blue;', validatedSettings.auto_upload);
-        console.info('%c🎯 Upload Target:', 'color: blue;', validatedSettings.upload_target);
-      }
+      console.log('Home: Fetching settings via Tauri...');
+      await tauriFetchSettings(); // Call the destructured function
     } catch (fetchError: any) {
-      console.error('Unhandled error in fetchSettings:', fetchError);
-      console.error('Stack trace:', fetchError instanceof Error ? fetchError.stack : 'No stack available');
+      console.error('Home: Error fetching settings via Tauri context:', fetchError);
       setError('Failed to load application settings. Using defaults.');
-
-      // Set empty settings as fallback
-      console.log('Home: Using empty settings due to error');
-      setSettings(createEmptySettings()); // Assuming createEmptySettings provides defaults
+      setSettings(createEmptySettings());
     }
-  }, []); // Also no dependencies
+  }, [tauriFetchSettings]);
 
-  // Fetch queue and settings on initial load and periodically for queue
   useEffect(() => {
     fetchQueue();
     fetchSettings();
-    const intervalId = setInterval(fetchQueue, 2000); // Fetch queue every 2 seconds
+    const intervalId = setInterval(fetchQueue, 2000);
 
     return () => clearInterval(intervalId);
-  }, [fetchQueue, fetchSettings]); // Add fetch functions as dependencies
+  }, [fetchQueue, fetchSettings]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -437,229 +322,176 @@ export default function Home() {
     setMessage('');
     setError('');
 
+    if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+        setError('Invalid URL format');
+        setIsLoading(false);
+        return;
+    }
+
     try {
-      const response = await fetch('/api/add', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || `HTTP error! status: ${response.status}`);
-      }
-
-      // Update message to indicate queuing
-      setMessage(`Success: ${data.message}`);
-      setUrl(''); // Clear the input field on success
-      fetchQueue(); // Fetch queue immediately after adding
+      const newItem: Partial<QueueItem> = {
+          url: url,
+          status: 'queued',
+      };
+      
+      const newItemId = await tauriAddToQueue(newItem as QueueItem); 
+      
+      setMessage(`URL added to queue (ID: ${newItemId})`);
+      setUrl('');
     } catch (submitError: any) {
-      console.error('Submission error:', submitError);
-      setError(`Failed to add URL: ${submitError.message}`);
+      console.error('Submission error via Tauri:', submitError);
+      const errorMessage = submitError.message || 'Failed to add URL';
+      if (errorMessage.includes('UNIQUE constraint failed: queue.url')) {
+          setError('This URL already exists in the queue.');
+      } else {
+          setError(`Failed to add URL: ${errorMessage}`);
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
-  // --- New function to handle clearing --- 
   const handleClearQueue = async (type: 'completed' | 'failed' | 'finished' | 'cancelled') => {
     setIsClearing(true);
     setMessage('');
     setError('');
     try {
-      const response = await fetch(`/api/queue/clear?type=${type}`, {
-        method: 'DELETE',
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || `HTTP error! status: ${response.status}`);
-      }
-      setMessage(`Successfully cleared ${data.count} ${type} items.`);
-      fetchQueue(); // Refresh queue view
+      // Convert single type string to Vec<String> for the Rust command
+      const statusTypes = [type]; 
+      
+      // Use the Tauri context function
+      await tauriClearItems(statusTypes); 
+      
+      // Assuming success if no error is thrown by invoke
+      setMessage(`Successfully requested clearing of ${type} items.`);
+      
+      // Fetching the queue might already happen via the context's update mechanism,
+      // but calling it explicitly ensures the UI updates after the clear operation.
+      // Note: If tauriClearItems already triggers a fetch internally, this might be redundant.
+      // fetchQueue(); // You might not need this if the context handles updates
+      
     } catch (clearError: any) {
-      console.error(`Error clearing ${type} items:`, clearError);
-      setError(`Failed to clear queue: ${clearError.message}`);
+      console.error(`Error clearing ${type} items via Tauri:`, clearError);
+      setError(`Failed to clear ${type} items: ${clearError.message}`);
     } finally {
       setIsClearing(false);
     }
   };
 
-  // --- New function to handle uploading --- 
   const handleUpload = async (itemId: string) => {
-    setUploadingItemId(itemId); // Set loading state for this specific item
+    setUploadingItemId(itemId);
     setMessage('');
     setError('');
     try {
-      const response = await fetch(`/api/upload/${itemId}`, {
-        method: 'POST',
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || `HTTP error! status: ${response.status}`);
+      // Call the Tauri context function
+      const result = await tauriTriggerUpload(itemId); 
+      
+      if (result.success) {
+        setMessage(result.message || `Upload initiated/completed for item ${itemId}.`);
+      } else {
+        throw new Error(result.message || 'Upload failed via Tauri');
       }
-      setMessage(data.message || `Upload started/completed for item ${itemId}.`);
-      fetchQueue(); // Refresh queue view to show 'uploading' then 'uploaded' status
+      // Queue should refresh automatically via the context, but explicit fetch can remain if needed
+      // fetchQueue(); 
     } catch (uploadError: any) {
-      console.error(`Error uploading item ${itemId}:`, uploadError);
+      console.error(`Error uploading item ${itemId} via Tauri:`, uploadError);
       setError(`Failed to upload item ${itemId}: ${uploadError.message}`);
-      fetchQueue(); // Refresh queue view to potentially show failure status
+      // fetchQueue(); // Fetch queue on error too if needed
     } finally {
-      setUploadingItemId(null); // Clear loading state for this item
+      setUploadingItemId(null);
     }
   };
 
-  // --- New function to handle cancelling --- 
   const handleCancel = async (itemId: string) => {
-    setCancellingItemId(itemId); // Set loading state for this specific item
+    setCancellingItemId(itemId);
     setMessage('');
     setError('');
     try {
-      const response = await fetch(`/api/cancel/${itemId}`, {
-        method: 'DELETE',
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || `HTTP error! status: ${response.status}`);
+      // Call the Tauri context function
+      const result = await tauriCancelItem(itemId);
+
+      if (result.success) {
+        setMessage(result.message || `Cancellation processed for item ${itemId}.`);
+      } else {
+        throw new Error(result.message || 'Cancellation failed via Tauri');
       }
-      setMessage(data.message || `Cancellation processed for item ${itemId}.`);
-      fetchQueue(); // Refresh queue view
+      // fetchQueue(); // Context should handle refresh
     } catch (cancelError: any) {
-      console.error(`Error cancelling item ${itemId}:`, cancelError);
+      console.error(`Error cancelling item ${itemId} via Tauri:`, cancelError);
       setError(`Failed to cancel item ${itemId}: ${cancelError.message}`);
-      fetchQueue(); // Refresh queue view
+      // fetchQueue(); // Context should handle refresh
     } finally {
-      setCancellingItemId(null); // Clear loading state for this item
+      setCancellingItemId(null);
     }
   };
 
-  // --- New function to handle general retry for failed items --- 
   const handleRetry = async (itemId: string) => {
     setRetryingItemId(itemId);
     setMessage('');
     setError('');
     try {
-      const response = await fetch(`/api/retry/${itemId}`, {
-        method: 'POST',
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || `HTTP error! status: ${response.status}`);
-      }
-      setMessage(data.message || `Retry request sent for item ${itemId}.`);
-      fetchQueue(); // Refresh queue to show status change (back to queued)
+      await tauriRetryItem(itemId);
+      setMessage('Item re-queued successfully.');
     } catch (retryError: any) {
-      console.error(`Error retrying item ${itemId}:`, retryError);
+      console.error(`Error retrying item ${itemId} via Tauri:`, retryError);
       setError(`Failed to retry item ${itemId}: ${retryError.message}`);
-      fetchQueue(); // Refresh queue view anyway
     } finally {
       setRetryingItemId(null);
     }
   };
 
-  // --- New function to handle restarting encoding --- 
   const handleRestartEncoding = async (itemId: string) => {
     setRestartingItemId(itemId);
     setMessage('');
     setError('');
     try {
-      const response = await fetch(`/api/restart-encoding/${itemId}`, {
-        method: 'POST',
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || `HTTP error! status: ${response.status}`);
+      // Call the Tauri context function
+      const result = await tauriRestartEncoding(itemId);
+
+      if (result.success) {
+        setMessage(result.message || `Restart encoding request sent for item ${itemId}.`);
+      } else {
+        throw new Error(result.message || 'Restart encoding failed via Tauri');
       }
-      setMessage(data.message || `Restart encoding request sent for item ${itemId}.`);
-      fetchQueue(); // Refresh queue to show status change (back to uploaded or similar)
+      // fetchQueue(); // Context should handle refresh
     } catch (restartError: any) {
-      console.error(`Error restarting encoding for item ${itemId}:`, restartError);
+      console.error(`Error restarting encoding for item ${itemId} via Tauri:`, restartError);
       setError(`Failed to restart encoding for item ${itemId}: ${restartError.message}`);
-      fetchQueue(); // Refresh queue view anyway
+      // fetchQueue(); // Context should handle refresh
     } finally {
       setRestartingItemId(null);
     }
   };
 
-  // --- New function to handle saving settings --- 
   const handleSaveSettings = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSavingSettings(true);
     setMessage('');
     setError('');
-
-    // Prepare the settings object to send
-    const settingsToSave: AppSettings = {
-        filemoon_api_key: settings.filemoon_api_key || '', // Send empty string if undefined
-        files_vc_api_key: settings.files_vc_api_key || '', // Send empty string if undefined
-        download_directory: settings.download_directory || '',
-        delete_after_upload: settings.delete_after_upload === 'true' ? 'true' : 'false', // Ensure boolean-like string
-        auto_upload: settings.auto_upload === 'true' ? 'true' : 'false', // Ensure boolean-like string
-        upload_target: settings.upload_target || 'filemoon' // Default to Filemoon if not set
-    };
-
-    console.log('Attempting to save settings:', JSON.stringify(settingsToSave, null, 2));
-
     try {
-        // Check if Tauri is available first
-        if (window.__TAURI__) {
-            // Use Tauri directly
-            console.log('Saving settings via Tauri...');
-            try {
-                const { invoke } = await import('@tauri-apps/api/tauri');
-                const result = await invoke('save_settings', { settings: settingsToSave });
-                console.log('Settings saved via Tauri:', result);
-                
-                // Refetch settings to confirm they were saved
-                await fetchSettings();
-                setMessage('Settings saved successfully via Tauri.');
-                setShowSettingsModal(false); // Close modal on success
-            } catch (tauriError: any) {
-                console.error('Error saving settings via Tauri:', tauriError);
-                throw new Error(`Tauri save failed: ${tauriError.message || 'Unknown error'}`);
-            }
-        } else {
-            // Fallback to API if Tauri is not available
-            console.log('Tauri not available, falling back to API...');
-            const response = await fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settingsToSave)
-            });
-            const data = await response.json();
-            if (!response.ok) {
-                throw new Error(data.error || `HTTP error! Status: ${response.status}`);
-            }
-            setSettings(data.settings); // Update local state with confirmed settings
-            setMessage('Settings saved successfully via API.');
-            setShowSettingsModal(false); // Close modal on success
-        }
+      console.log("Attempting to save settings:", settings);
+      await tauriSaveSettings(settings); // Call the destructured function
+      setMessage('Settings saved successfully.');
+      setShowSettingsModal(false);
     } catch (saveError: any) {
-        console.error('Error saving settings:', saveError);
-        setError(`Failed to save settings: ${saveError.message}`);
+      console.error('Error saving settings:', saveError);
+      setError(`Failed to save settings: ${saveError.message}`);
     } finally {
-        setIsSavingSettings(false);
+      setIsSavingSettings(false);
     }
   };
 
-  // --- New function to handle opening links externally via Electron --- 
   const handleOpenLink = async (filecode: string | null | undefined) => {
     console.log('handleOpenLink called with filecode:', filecode);
     if (!filecode) return;
     
-    // Determine if it's a Files.vc link or Filemoon link based on format/prefix
     let url;
     if (filecode.startsWith('https://')) {
-      // If it's a full URL already, use it directly (future-proofing)
       url = filecode;
     } else if (filecode.startsWith('files_vc:')) {
-      // Handle Files.vc specific format if needed
       const code = filecode.replace('files_vc:', '');
       url = `https://files.vc/d/${code}`;
     } else {
-      // Default to Filemoon if no specific format is detected
       url = `https://filemoon.sx/d/${filecode}`;
     }
     
@@ -676,13 +508,11 @@ export default function Home() {
           setError('Error interacting with Electron to open link.');
       }
     } else {
-      // Fallback for non-Electron environments (optional, unlikely for this app)
       console.warn('Electron API not found, opening link directly (may open in app window).');
       window.open(url, '_blank');
     }
   };
 
-  // *** ADDED: Filter and Sort the queue for display ***
   const displayedQueueItems = queue
     .filter(item => {
       if (filterStatus === 'all') return true;
@@ -701,17 +531,15 @@ export default function Home() {
         case 'status':
           return (a.status || '').localeCompare(b.status || '');
         default:
-          return 0; // Should not happen
+          return 0;
       }
     });
 
-  // --- Settings Modal Component (Simplified Inline) ---
   const SettingsModal = () => (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex justify-center items-center z-50">
         <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-lg">
             <h2 className="text-2xl font-bold mb-6">Application Settings</h2>
             
-            {/* Debug info for troubleshooting - hidden in normal operation */}
             {process.env.NODE_ENV !== 'production' && (
               <div className="mb-4 p-2 bg-gray-100 rounded text-xs">
                 <p><strong>Debug Info:</strong></p>
@@ -721,7 +549,6 @@ export default function Home() {
             )}
             
             <form onSubmit={handleSaveSettings}>
-                {/* Filemoon API Key */} 
                 <div className="mb-4">
                     <label htmlFor="filemoonApiKey" className="block text-sm font-medium text-gray-700 mb-1">Filemoon API Key</label>
                     <input
@@ -733,7 +560,6 @@ export default function Home() {
                         className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
                     />
                 </div>
-                {/* Files.vc API Key */} 
                 <div className="mb-4">
                     <label htmlFor="filesVcApiKey" className="block text-sm font-medium text-gray-700 mb-1">Files.vc API Key</label>
                     <input
@@ -745,7 +571,6 @@ export default function Home() {
                         className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
                     />
                 </div>
-                {/* Download Directory */} 
                 <div className="mb-4">
                     <label htmlFor="downloadDir" className="block text-sm font-medium text-gray-700 mb-1">Download Directory</label>
                     <input
@@ -756,10 +581,8 @@ export default function Home() {
                         placeholder="e.g., C:\Users\You\Downloads\PermaVid"
                         className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
                     />
-                    {/* Basic validation hint - advanced validation later */} 
                     <p className="mt-1 text-xs text-gray-500">Enter the full path for downloads.</p>
                 </div>
-                {/* Delete After Upload */} 
                 <div className="mb-6 flex items-center">
                     <input
                         id="deleteAfterUpload"
@@ -772,7 +595,6 @@ export default function Home() {
                         Delete local file after successful upload
                     </label>
                 </div>
-                {/* Auto Upload */} 
                 <div className="mb-6 flex items-center">
                     <input
                         id="autoUpload"
@@ -785,7 +607,6 @@ export default function Home() {
                         Auto Upload
                     </label>
                 </div>
-                {/* Upload Target */} 
                 <div className="mb-6">
                     <label htmlFor="uploadTarget" className="block text-sm font-medium text-gray-700 mb-1">Upload Target</label>
                     <select
@@ -800,7 +621,6 @@ export default function Home() {
                     </select>
                 </div>
 
-                {/* Action Buttons */} 
                 <div className="flex justify-end space-x-4">
                     <button
                         type="button"
@@ -825,14 +645,12 @@ export default function Home() {
 
   return (
     <main className="flex min-h-screen flex-col items-center p-8 md:p-24">
-      {/* --- Settings Modal Trigger --- */} 
        <button 
             onClick={() => setShowSettingsModal(true)}
             className="absolute top-4 right-4 px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 text-sm"
         >
             Settings
         </button>
-        {/* --- Link to Gallery Page --- */}
         <Link 
             href="/gallery" 
             className="absolute top-4 right-24 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-sm"
@@ -843,7 +661,6 @@ export default function Home() {
       <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm flex flex-col">
         <h1 className="text-3xl md:text-4xl font-bold mb-8">PermaVid URL Adder & Queue</h1>
 
-        {/* Submission Form */} 
         <form onSubmit={handleSubmit} className="w-full max-w-md mb-12">
           <div className="mb-4">
             <label htmlFor="urlInput" className="block text-sm font-medium text-gray-700 mb-1">
@@ -868,7 +685,6 @@ export default function Home() {
           </button>
         </form>
 
-        {/* Feedback Messages */} 
         {message && (
           <p className="mt-4 text-green-600 text-center mb-4">{message}</p>
         )}
@@ -876,14 +692,10 @@ export default function Home() {
           <p className="mt-4 text-red-600 text-center mb-4">{error}</p>
         )}
 
-        {/* Queue Display */} 
         <div className="w-full max-w-4xl">
           <div className="flex justify-between items-center mb-4">
-             {/* *** UPDATED: Use filtered/sorted list length for display *** */} 
              <h2 className="text-2xl font-semibold">Download Queue ({displayedQueueItems.length} items)</h2>
-             {/* --- Queue Controls (Filter, Sort, Clear) --- */} 
              <div className="flex items-center space-x-2">
-                {/* --- Filter Dropdown --- */} 
                 <div className="relative">
                     <button
                         onClick={() => setShowFilterDropdown(!showFilterDropdown)}
@@ -894,7 +706,7 @@ export default function Home() {
                     </button>
                     {showFilterDropdown && (
                         <div 
-                            className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20" // Increase z-index
+                            className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
                             onMouseLeave={() => setShowFilterDropdown(false)}
                         >
                             <div className="py-1" role="menu" aria-orientation="vertical">
@@ -912,7 +724,6 @@ export default function Home() {
                         </div>
                     )}
                 </div>
-                {/* --- Sort Dropdown --- */} 
                 <div className="relative">
                      <button
                          onClick={() => setShowSortDropdown(!showSortDropdown)}
@@ -923,7 +734,7 @@ export default function Home() {
                      </button>
                      {showSortDropdown && (
                          <div
-                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20" // Increase z-index
+                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
                              onMouseLeave={() => setShowSortDropdown(false)}
                          >
                              <div className="py-1" role="menu" aria-orientation="vertical">
@@ -936,7 +747,6 @@ export default function Home() {
                          </div>
                      )}
                  </div>
-                 {/* --- Clear Buttons Dropdown --- */}
                  <div className="relative">
                      <button
                          onClick={() => setShowClearDropdown(!showClearDropdown)}
@@ -948,7 +758,7 @@ export default function Home() {
                      </button>
                      {showClearDropdown && (
                          <div
-                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20" // Increased z-index
+                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
                              onMouseLeave={() => setShowClearDropdown(false)}
                          >
                              <div className="py-1" role="menu" aria-orientation="vertical">
@@ -963,7 +773,6 @@ export default function Home() {
              </div>
            </div>
 
-           {/* Queue List */}
            <div className="bg-white shadow overflow-hidden sm:rounded-md mt-4">
              <ul role="list" className="divide-y divide-gray-200">
                {displayedQueueItems.length === 0 ? (
@@ -973,7 +782,7 @@ export default function Home() {
                ) : (
                  displayedQueueItems.map((item) => (
                    <QueueListItem
-                     key={item.id}
+                     key={item.id ?? item.url}
                      item={item}
                      uploadingItemId={uploadingItemId}
                      cancellingItemId={cancellingItemId}
@@ -992,7 +801,6 @@ export default function Home() {
         </div>
       </div>
 
-      {/* --- Settings Modal --- */}
       {showSettingsModal && <SettingsModal />}
     </main>
   );

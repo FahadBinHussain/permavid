@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getQueue, QueueItem } from '@/lib/queue';
 
-// Add these export configurations for static export compatibility
-export const dynamic = 'force-dynamic';
-export const revalidate = 0; // No cache, always fetch fresh data
+// Remove incompatible export configurations for static export
+// export const dynamic = 'force-dynamic';
+// export const revalidate = 0; // No cache, always fetch fresh data
 
 export async function GET(request: Request) {
   try {

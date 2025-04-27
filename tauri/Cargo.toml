@@ -21,6 +21,11 @@ rusqlite = { version = "0.30.0", features = ["bundled"] }
 uuid = { version = "1.6.1", features = ["v4", "serde"] }
 chrono = { version = "0.4.31", features = ["serde"] }
 dirs = "5.0.1"
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "compat"] }
+futures-util = { version = "0.3", features = ["io"] }
+bytes = "1.0"
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

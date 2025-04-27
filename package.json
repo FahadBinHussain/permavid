@@ -19,6 +19,7 @@
     "dist:tauri": "npm run build:next && npm run build:tauri"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "@next/font": "^14.2.5",
     "@tauri-apps/api": "^1.5.3",
     "axios": "^1.8.4",

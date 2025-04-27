@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cancelItem } from '@/lib/queue'; // Restore import
 
-// Add these export configurations for static export compatibility
-export const dynamic = 'force-dynamic';
-export const revalidate = 0; // No cache, always fetch fresh data 
+// Remove incompatible export configurations for static export
+// export const dynamic = 'force-dynamic';
+// export const revalidate = 0; 
 
 // DELETE request to cancel a specific item ID
 export async function DELETE(

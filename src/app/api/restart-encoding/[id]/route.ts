@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { restartFilemoonEncoding } from '@/lib/queue';
 
-// Add these export configurations for static export compatibility
-export const dynamic = 'force-dynamic';
-export const revalidate = 0; // No cache, always fetch fresh data
+// Remove incompatible export configurations for static export
+// export const dynamic = 'force-dynamic';
+// export const revalidate = 0; // No cache, always fetch fresh data
 
 // POST request to trigger encoding restart for a specific item ID
 export async function POST(

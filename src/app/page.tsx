@@ -355,17 +355,48 @@ export default function Home() {
   const fetchSettings = useCallback(async () => {
     try {
       console.log('Home: Fetching settings via direct helper...');
+      console.log('Home: Tauri available check:', typeof window !== 'undefined' && !!window.__TAURI__);
       
-      // Use our robust direct settings fetcher instead of the API
-      const data = await getSettingsDirectly();
-      console.log('Home: Settings received via direct helper:', data);
+      // Add more detailed error trapping
+      let data;
+      try {
+        // Use our robust direct settings fetcher instead of the API
+        data = await getSettingsDirectly();
+        console.log('Home: Settings received via direct helper:', JSON.stringify(data, null, 2));
+      } catch (directFetchError) {
+        console.error('Critical error in getSettingsDirectly():', directFetchError);
+        console.error('Stack:', directFetchError instanceof Error ? directFetchError.stack : 'No stack available');
+        
+        // Fall back to empty settings
+        console.log('Home: Using empty settings due to direct fetch error');
+        data = createEmptySettings();
+      }
       
       // Ensure we always have a valid settings object
-      setSettings(data || createEmptySettings());
+      if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+        console.log('Home: No settings found or invalid format, using empty settings');
+        setSettings(createEmptySettings());
+      } else {
+        // Validate each expected field exists with fallbacks
+        const validatedSettings: AppSettings = {
+          filemoon_api_key: data.filemoon_api_key || '',
+          files_vc_api_key: data.files_vc_api_key || '',
+          download_directory: data.download_directory || '',
+          delete_after_upload: typeof data.delete_after_upload === 'string' ? data.delete_after_upload : 'false',
+          auto_upload: typeof data.auto_upload === 'string' ? data.auto_upload : 'false',
+          upload_target: data.upload_target || 'filemoon'
+        };
+        
+        console.log('Home: Using validated settings:', JSON.stringify(validatedSettings, null, 2));
+        setSettings(validatedSettings);
+      }
     } catch (fetchError: any) {
-      console.error('Error fetching settings (with stack):', fetchError);
-      setError('Failed to load application settings.');
+      console.error('Unhandled error in fetchSettings:', fetchError);
+      console.error('Stack trace:', fetchError instanceof Error ? fetchError.stack : 'No stack available');
+      setError('Failed to load application settings. Using defaults.');
+      
       // Set empty settings as fallback
+      console.log('Home: Using empty settings due to error');
       setSettings(createEmptySettings());
     }
   }, []); // Also no dependencies
@@ -548,19 +579,42 @@ export default function Home() {
         upload_target: settings.upload_target || 'filemoon' // Default to Filemoon if not set
     };
 
+    console.log('Attempting to save settings:', JSON.stringify(settingsToSave, null, 2));
+
     try {
-        const response = await fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(settingsToSave)
-        });
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || `HTTP error! Status: ${response.status}`);
+        // Check if Tauri is available first
+        if (window.__TAURI__) {
+            // Use Tauri directly
+            console.log('Saving settings via Tauri...');
+            try {
+                const { invoke } = await import('@tauri-apps/api/tauri');
+                const result = await invoke('save_settings', { settings: settingsToSave });
+                console.log('Settings saved via Tauri:', result);
+                
+                // Refetch settings to confirm they were saved
+                await fetchSettings();
+                setMessage('Settings saved successfully via Tauri.');
+                setShowSettingsModal(false); // Close modal on success
+            } catch (tauriError: any) {
+                console.error('Error saving settings via Tauri:', tauriError);
+                throw new Error(`Tauri save failed: ${tauriError.message || 'Unknown error'}`);
+            }
+        } else {
+            // Fallback to API if Tauri is not available
+            console.log('Tauri not available, falling back to API...');
+            const response = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settingsToSave)
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || `HTTP error! Status: ${response.status}`);
+            }
+            setSettings(data.settings); // Update local state with confirmed settings
+            setMessage('Settings saved successfully via API.');
+            setShowSettingsModal(false); // Close modal on success
         }
-        setSettings(data.settings); // Update local state with confirmed settings
-        setMessage('Settings saved successfully.');
-        setShowSettingsModal(false); // Close modal on success
     } catch (saveError: any) {
         console.error('Error saving settings:', saveError);
         setError(`Failed to save settings: ${saveError.message}`);

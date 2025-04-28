@@ -775,4 +775,41 @@ impl Database {
         }
     }
     // --- END ADDED ---
+
+    // --- ADDED: Update item details after successful download ---
+    pub fn update_item_after_download(
+        &self,
+        id: &str,
+        status: &str,
+        title: Option<String>,
+        local_path: Option<String>,
+        // info_json_path: Option<String>, // We might not store this directly in DB yet
+        thumbnail_url: Option<String>,
+        message: Option<String>, // Optional message (e.g., "Download complete")
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().timestamp_millis();
+
+        conn.execute(
+            "UPDATE queue SET 
+                status = ?,
+                title = ?,
+                local_path = ?,
+                thumbnail_url = ?,
+                message = ?,
+                updated_at = ? 
+            WHERE id = ?",
+            params![
+                status,
+                title,
+                local_path,
+                thumbnail_url,
+                message,
+                now,
+                id
+            ],
+        )?;
+
+        Ok(())
+    }
 } 

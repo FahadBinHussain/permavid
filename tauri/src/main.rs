@@ -17,6 +17,34 @@ use tokio::time::sleep;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use futures_util::stream::TryStreamExt;
 use bytes::Bytes;
+use std::process::Stdio;
+use std::path::PathBuf;
+use tokio::process::Command;
+use tokio::io::{BufReader, AsyncBufReadExt};
+use regex::Regex;
+use lazy_static::lazy_static;
+use serde_json::Value as JsonValue;
+
+lazy_static! {
+    // Regex to capture download percentage from yt-dlp output
+    static ref YTDLP_PROGRESS_REGEX: Regex = Regex::new(r"\[download\]\s+(\d{1,3}(?:\.\d+)?)%").unwrap();
+}
+
+// Helper function to sanitize filenames
+fn sanitize_filename(name: &str) -> String {
+    // Basic sanitization: replace invalid chars with underscores
+    // This might need to be more robust depending on expected titles
+    name.chars().map(|c| {
+        match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            _ if c.is_control() => '_',
+            _ => c,
+        }
+    }).collect::<String>()
+    // Trim leading/trailing whitespace/dots/underscores and limit length
+    .trim_matches(|c: char| c.is_whitespace() || c == '.' || c == '_')
+    .chars().take(200).collect()
+}
 
 // State for holding the database connection
 struct AppState {
@@ -731,33 +759,163 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
 
             // --- Execute Download (if safe to proceed) --- 
             if proceed_with_download { // Check the flag
-                println!("Simulating download for item: {}...", item_id);
-                sleep(Duration::from_secs(15)).await; // Simulate download time
+                println!("Starting yt-dlp download for item: {}...", item_id);
+                
+                // --- yt-dlp Command Construction ---
+                // Use yt-dlp's output template feature for naming
+                let output_template = format!("%(title)s by %(channel)s.%(ext)s"); 
+                let output_path_base = Path::new(&download_dir); // Just the directory
+                // output_path_str will contain the directory and the template string
+                let output_path_str = output_path_base.join(&output_template).to_string_lossy().to_string();
 
-                // --- After download simulation --- 
-                let download_success = true; // Placeholder
-                let final_status = if download_success { "completed" } else { "failed" };
-                let final_message = if download_success { Some("Download complete (simulated)".to_string()) } else { Some("Download failed (simulated)".to_string()) };
+                let ytdlp_path = "yt-dlp"; // Assuming yt-dlp is in PATH. Consider making this configurable.
 
+                let mut cmd = Command::new(ytdlp_path);
+                cmd.arg(&item_url); // The URL to download
+                cmd.arg("--write-info-json"); // Get metadata (still useful even if not parsed immediately)
+                cmd.arg("--output"); // Specify output template
+                cmd.arg(&output_path_str); // Pass the full path template
+                cmd.arg("--no-simulate"); // Ensure it actually downloads
+                cmd.arg("--progress"); // Request progress updates
+                cmd.arg("--newline"); // Ensure progress updates are on new lines
+                cmd.arg("--no-warnings"); // Reduce noise in output
+                // Consider adding --format bestvideo+bestaudio/best if needed
+
+                cmd.stdout(Stdio::piped()); // Capture standard output
+                cmd.stderr(Stdio::piped()); // Capture standard error
+                
+                // --- Run yt-dlp Process ---
+                let mut final_status = "failed"; // Assume failure initially
+                let mut final_message = Some("Download failed (Unknown error)".to_string());
+                let mut download_success = false;
+
+                match cmd.spawn() {
+                    Ok(mut child) => {
+                        // TODO: Read stdout/stderr for progress/errors (in next step)
+                        let stdout = child.stdout.take().expect("Failed to capture stdout");
+                        let stderr = child.stderr.take().expect("Failed to capture stderr");
+
+                        let mut stdout_reader = BufReader::new(stdout).lines();
+                        let mut stderr_reader = BufReader::new(stderr).lines();
+
+                        // Clone necessary data for the async blocks
+                        let item_id_clone_stdout = item_id.clone();
+                        let app_handle_clone_stdout = app_handle.clone();
+
+                        // Spawn task to read stdout and parse progress
+                        tokio::spawn(async move {
+                            while let Ok(Some(line)) = stdout_reader.next_line().await {
+                                println!("[yt-dlp stdout] {}", line);
+                                // Try to parse progress percentage
+                                if let Some(caps) = YTDLP_PROGRESS_REGEX.captures(&line) {
+                                    if let Some(percent_match) = caps.get(1) {
+                                        if let Ok(percent) = percent_match.as_str().parse::<f32>() {
+                                            let progress_message = format!("Downloading: {:.1}%", percent);
+                                            // Update DB status (briefly lock)
+                                            {
+                                                let state: State<'_, AppState> = app_handle_clone_stdout.state();
+                                                let db_lock = state.db.lock().unwrap();
+                                                // Ignore result, best effort update
+                                                let _ = db_lock.update_item_status(&item_id_clone_stdout, "downloading", Some(progress_message)); 
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
+                        // Spawn task to read stderr
+                        tokio::spawn(async move {
+                             let mut err_output = String::new();
+                             while let Ok(Some(line)) = stderr_reader.next_line().await {
+                                 println!("[yt-dlp stderr] {}", line);
+                                 err_output.push_str(&line);
+                                 err_output.push('\n');
+                             }
+                             // TODO: Use err_output if download fails
+                        });
+
+                        match child.wait().await {
+                            Ok(status) => {
+                                if status.success() {
+                                    println!("yt-dlp process finished successfully for item: {}", item_id);
+                                    download_success = true;
+                                    final_status = "completed"; // Mark as completed for now
+                                    final_message = Some("Download finished, processing metadata...".to_string());
+                                    // TODO: Process info.json and thumbnail here
+                                } else {
+                                    let err_msg = format!("yt-dlp exited with error code: {:?}", status.code());
+                                    eprintln!("Error for item {}: {}", item_id, err_msg);
+                                    final_message = Some(err_msg);
+                                }
+                            }
+                            Err(e) => {
+                                let err_msg = format!("Failed to wait for yt-dlp process: {}", e);
+                                eprintln!("Error for item {}: {}", item_id, err_msg);
+                                final_message = Some(err_msg);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                         let err_msg = format!("Failed to spawn yt-dlp command: {}. Is yt-dlp installed and in PATH?", e);
+                         eprintln!("Error for item {}: {}", item_id, err_msg);
+                         final_message = Some(err_msg);
+                    }
+                }
+                // --- END yt-dlp Process ---
+
+                // --- After download attempt ---
                 {
                      // --- Start of DB Lock Scope 3 (Update Status & Check Auto-Upload) ---
                     let app_state: State<'_, AppState> = app_handle.state();
                     let db_lock_after = app_state.db.lock().unwrap();
 
-                    if let Err(e) = (*db_lock_after).update_item_status(&item_id, final_status, final_message) {
-                        eprintln!("Error updating item {} status after download simulation: {}", item_id, e);
-                    } else {
-                        println!("Item {} status updated to '{}' after download simulation.", item_id, final_status);
-                        
-                        let settings_after = match (*db_lock_after).get_settings() {
-                            Ok(s) => s,
-                            Err(_) => AppSettings::default()
-                        };
+                    // --- Update using the new function (or fallback to status update) ---
+                    if download_success {
+                        // We still don't know the *exact* final filename without parsing JSON 
+                        // (due to potential sanitization by yt-dlp and unknown extension),
+                        // but we can store the *templated* path used for the download.
+                        // It might differ slightly from the actual file on disk if chars were sanitized.
+                        let final_templated_path = output_path_str.clone(); 
 
-                        if download_success && settings_after.auto_upload.unwrap_or_else(|| "false".to_string()) == "true" {
-                            println!("Auto-upload enabled, would trigger upload for {}", item_id);
-                            // TODO: Trigger upload logic here
+                        if let Err(e) = (*db_lock_after).update_item_after_download(
+                            &item_id,
+                            "completed", // New status
+                            None,       // No title from JSON yet
+                            Some(final_templated_path), // Store templated path
+                            None,       // No thumbnail URL from JSON yet
+                            Some("Download complete".to_string()) // Simple success message
+                        ) {
+                            eprintln!("Error updating item {} details after download: {}", item_id, e);
+                        } else {
+                            println!("Item {} details updated after successful download.", item_id);
                         }
+                    } else {
+                        // Update status to failed on error
+                        if let Err(e) = (*db_lock_after).update_item_status(&item_id, "failed", final_message.clone()) {
+                           eprintln!("Error updating item {} status to failed: {}", item_id, e);
+                        } else {
+                           println!("Item {} status updated to 'failed'.", item_id);
+                        }
+                    }
+
+                    // Check for auto-upload (keep this logic)
+                    let settings_after = match (*db_lock_after).get_settings() {
+                        Ok(s) => s,
+                        Err(_) => AppSettings::default()
+                    };
+
+                    if download_success && settings_after.auto_upload.unwrap_or_else(|| "false".to_string()) == "true" {
+                        println!("Auto-upload enabled, triggering upload for {}", item_id);
+                        // Use tokio::spawn for non-blocking upload trigger
+                        let upload_id = item_id.clone();
+                        let app_handle_clone = app_handle.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = trigger_upload(upload_id.clone(), app_handle_clone.state()).await {
+                                eprintln!("Auto-upload failed for {}: {}", upload_id, e);
+                                // Optionally update status back to indicate upload failure
+                            }
+                        });
                     }
                     // --- db_lock_after is dropped here ---
                 }

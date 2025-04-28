@@ -275,6 +275,42 @@ impl Database {
         Ok(items)
     }
     
+    // New function to get items suitable for the gallery
+    pub fn get_gallery_items(&self) -> Result<Vec<QueueItem>> {
+        // Fetch items with status 'uploaded' or 'encoded'
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at, local_path 
+             FROM queue 
+             WHERE status = 'uploaded' OR status = 'encoded' 
+             ORDER BY updated_at DESC"
+        )?;
+        
+        let item_iter = stmt.query_map([], |row| {
+            Ok(QueueItem {
+                id: row.get(0)?,
+                url: row.get(1)?,
+                status: row.get(2)?,
+                message: row.get(3)?,
+                title: row.get(4)?,
+                filemoon_url: row.get(5)?,
+                files_vc_url: row.get(6)?,
+                encoding_progress: row.get(7)?,
+                thumbnail_url: row.get(8)?,
+                added_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                local_path: row.get(11)?,
+            })
+        })?;
+        
+        let mut items = Vec::new();
+        for item in item_iter {
+            items.push(item?);
+        }
+        
+        Ok(items)
+    }
+    
     pub fn clear_items_by_status(&self, status_types: &[String]) -> Result<()> {
         if status_types.is_empty() {
             return Ok(());

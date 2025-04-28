@@ -18,7 +18,8 @@ import {
   retryItem,
   triggerUpload,
   cancelItem,
-  restartEncoding
+  restartEncoding,
+  getGalleryItems
 } from '@/lib/tauri-api';
 
 // Define context value type
@@ -41,6 +42,7 @@ interface TauriContextType {
   triggerUpload: (id: string) => Promise<{success: boolean, message: string}>;
   cancelItem: (id: string) => Promise<{success: boolean, message: string}>;
   restartEncoding: (id: string) => Promise<{success: boolean, message: string}>;
+  getGalleryItems: () => Promise<{success: boolean, message: string, data?: QueueItem[]}>;
 }
 
 // Create context with default values
@@ -62,7 +64,8 @@ const TauriContext = createContext<TauriContextType>({
   retryItem: async () => {},
   triggerUpload: async () => ({success: false, message: 'Provider not ready'}),
   cancelItem: async () => ({success: false, message: 'Provider not ready'}),
-  restartEncoding: async () => ({success: false, message: 'Provider not ready'})
+  restartEncoding: async () => ({success: false, message: 'Provider not ready'}),
+  getGalleryItems: async () => ({success: false, message: 'Provider not ready', data: []})
 });
 
 // Provider component
@@ -201,6 +204,13 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     return result; 
   };
 
+  const handleGetGalleryItems = async () => {
+    // Invoke the Tauri command via the API wrapper
+    const result = await getGalleryItems();
+    // Return the result so the UI can use the data/messages/errors
+    return result; 
+  };
+
   return (
     <TauriContext.Provider value={{
       isReady,
@@ -220,7 +230,8 @@ export function TauriProvider({ children }: { children: ReactNode }) {
       retryItem: handleRetryItem,
       triggerUpload: handleTriggerUpload,
       cancelItem: handleCancelItem,
-      restartEncoding: handleRestartEncoding
+      restartEncoding: handleRestartEncoding,
+      getGalleryItems: handleGetGalleryItems
     }}>
       {children}
     </TauriContext.Provider>

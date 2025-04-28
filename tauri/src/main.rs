@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Ensure db module is included
 mod db;
 
 use db::{Database, QueueItem, AppSettings};
@@ -352,6 +353,21 @@ async fn restart_encoding(id: String, app_state: State<'_, AppState>) -> Result<
 }
 // --- END ADDED Command ---
 
+// --- ADDED: Command to get gallery items ---
+#[tauri::command]
+async fn get_gallery_items(app_state: State<'_, AppState>) -> Result<Response<Vec<QueueItem>>, String> {
+    let db = app_state.db.lock().unwrap();
+    match (*db).get_gallery_items() {
+        Ok(items) => Ok(Response {
+            success: true,
+            message: "Gallery items retrieved successfully".to_string(),
+            data: Some(items),
+        }),
+        Err(e) => Err(format!("Database error getting gallery items: {}", e)),
+    }
+}
+// --- END ADDED Command ---
+
 #[tauri::command]
 #[tokio::main]
 async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Response<String>, String> {
@@ -558,7 +574,8 @@ fn main() {
             retry_item,
             trigger_upload,
             cancel_item,
-            restart_encoding
+            restart_encoding,
+            get_gallery_items
         ])
         .setup(|app| {
             if let Ok(app_dir) = std::env::current_dir() {

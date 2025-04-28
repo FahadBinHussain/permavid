@@ -229,3 +229,23 @@ export async function restartEncoding(id: string): Promise<{success: boolean, me
   }
 }
 // --- END ADDED --- 
+
+// --- ADDED: Function to get gallery items via Tauri ---
+export async function getGalleryItems(): Promise<{success: boolean, message: string, data?: QueueItem[]}> {
+  try {
+    // Response structure matches Rust Response<Vec<QueueItem>>
+    const response: any = await invoke('get_gallery_items');
+    if (!response || !response.success) {
+      throw new Error(response?.message || 'Failed to get gallery items from backend.');
+    }
+    return { success: true, message: response.message, data: response.data || [] };
+  } catch (error) {
+    console.error('Error getting gallery items via Tauri:', error);
+    return { 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Unknown error getting gallery items',
+        data: []
+    };
+  }
+}
+// --- END ADDED --- 

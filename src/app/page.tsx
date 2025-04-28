@@ -251,24 +251,22 @@ const QueueListItem: React.FC<QueueItemProps> = ({
 export default function Home() {
   // Use the Tauri context hook
   const {
-    queueItems: contextQueue, // Use correct name: queueItems
-    settings: contextSettings, // Get settings from context
-    fetchQueueItems: tauriFetchQueue, // Use correct name: fetchQueueItems
-    getAppSettings: tauriFetchSettings, // Use correct name: getAppSettings
+    queueItems: contextQueue,
+    fetchQueueItems: tauriFetchQueue,
+    getAppSettings: tauriGetAppSettings,
     addToQueue: tauriAddToQueue,
     clearItems: tauriClearItems,
     retryItem: tauriRetryItem,
-    saveAppSettings: tauriSaveSettings, // Use correct name: saveAppSettings
-    triggerUpload: tauriTriggerUpload, // <-- Destructure the new upload function
-    cancelItem: tauriCancelItem, // <-- Destructure the new cancel function
-    restartEncoding: tauriRestartEncoding // <-- Destructure the new restart encoding function
+    saveAppSettings: tauriSaveSettings,
+    triggerUpload: tauriTriggerUpload,
+    cancelItem: tauriCancelItem,
+    restartEncoding: tauriRestartEncoding
   } = useTauri();
 
   const [url, setUrl] = useState('');
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [queue, setQueue] = useState<QueueItem[]>([]); // Use imported type
   const [isClearing, setIsClearing] = useState(false);
   const [uploadingItemId, setUploadingItemId] = useState<string | null>(null);
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
@@ -277,7 +275,6 @@ export default function Home() {
 
   // --- Settings State ---
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settings, setSettings] = useState<AppSettings>(createEmptySettings()); // <-- Use imported type and factory
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
   const [showClearDropdown, setShowClearDropdown] = useState(false);
@@ -300,21 +297,37 @@ export default function Home() {
   const fetchSettings = useCallback(async () => {
     try {
       console.log('Home: Fetching settings via Tauri...');
-      await tauriFetchSettings(); // Call the destructured function
+      await tauriGetAppSettings(); // Call the destructured function
     } catch (fetchError: any) {
       console.error('Home: Error fetching settings via Tauri context:', fetchError);
       setError('Failed to load application settings. Using defaults.');
-      setSettings(createEmptySettings());
     }
-  }, [tauriFetchSettings]);
+  }, [tauriGetAppSettings]);
 
   useEffect(() => {
+    // Initial fetch
     fetchQueue();
     fetchSettings();
-    const intervalId = setInterval(fetchQueue, 2000);
 
-    return () => clearInterval(intervalId);
-  }, [fetchQueue, fetchSettings]);
+    let intervalId: NodeJS.Timeout | null = null;
+
+    // Only set the interval if the settings modal is NOT open
+    if (!showSettingsModal) {
+      console.log('Settings modal closed, starting queue fetch interval.');
+      intervalId = setInterval(fetchQueue, 5000); // Increased interval slightly
+    } else {
+      console.log('Settings modal open, interval fetch paused.');
+    }
+
+    // Cleanup function: clear interval if it exists
+    return () => {
+      if (intervalId) {
+        console.log('Cleaning up queue fetch interval.');
+        clearInterval(intervalId);
+      }
+    };
+    // Add showSettingsModal to dependency array to re-run effect when it changes
+  }, [fetchQueue, fetchSettings, showSettingsModal]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -365,11 +378,6 @@ export default function Home() {
       // Assuming success if no error is thrown by invoke
       setMessage(`Successfully requested clearing of ${type} items.`);
       
-      // Fetching the queue might already happen via the context's update mechanism,
-      // but calling it explicitly ensures the UI updates after the clear operation.
-      // Note: If tauriClearItems already triggers a fetch internally, this might be redundant.
-      // fetchQueue(); // You might not need this if the context handles updates
-      
     } catch (clearError: any) {
       console.error(`Error clearing ${type} items via Tauri:`, clearError);
       setError(`Failed to clear ${type} items: ${clearError.message}`);
@@ -391,12 +399,9 @@ export default function Home() {
       } else {
         throw new Error(result.message || 'Upload failed via Tauri');
       }
-      // Queue should refresh automatically via the context, but explicit fetch can remain if needed
-      // fetchQueue(); 
     } catch (uploadError: any) {
       console.error(`Error uploading item ${itemId} via Tauri:`, uploadError);
       setError(`Failed to upload item ${itemId}: ${uploadError.message}`);
-      // fetchQueue(); // Fetch queue on error too if needed
     } finally {
       setUploadingItemId(null);
     }
@@ -415,11 +420,9 @@ export default function Home() {
       } else {
         throw new Error(result.message || 'Cancellation failed via Tauri');
       }
-      // fetchQueue(); // Context should handle refresh
     } catch (cancelError: any) {
       console.error(`Error cancelling item ${itemId} via Tauri:`, cancelError);
       setError(`Failed to cancel item ${itemId}: ${cancelError.message}`);
-      // fetchQueue(); // Context should handle refresh
     } finally {
       setCancellingItemId(null);
     }
@@ -453,29 +456,27 @@ export default function Home() {
       } else {
         throw new Error(result.message || 'Restart encoding failed via Tauri');
       }
-      // fetchQueue(); // Context should handle refresh
     } catch (restartError: any) {
       console.error(`Error restarting encoding for item ${itemId} via Tauri:`, restartError);
       setError(`Failed to restart encoding for item ${itemId}: ${restartError.message}`);
-      // fetchQueue(); // Context should handle refresh
     } finally {
       setRestartingItemId(null);
     }
   };
 
-  const handleSaveSettings = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const handleSaveSettings = async (modalLocalSettings: AppSettings) => {
     setIsSavingSettings(true);
     setMessage('');
     setError('');
     try {
-      console.log("Attempting to save settings:", settings);
-      await tauriSaveSettings(settings); // Call the destructured function
+      console.log("Attempting to save settings:", modalLocalSettings);
+      await tauriSaveSettings(modalLocalSettings); // Call the context save function
       setMessage('Settings saved successfully.');
-      setShowSettingsModal(false);
+      setShowSettingsModal(false); // Close modal on successful save
     } catch (saveError: any) {
       console.error('Error saving settings:', saveError);
       setError(`Failed to save settings: ${saveError.message}`);
+      // Keep modal open on error
     } finally {
       setIsSavingSettings(false);
     }
@@ -513,7 +514,7 @@ export default function Home() {
     }
   };
 
-  const displayedQueueItems = queue
+  const displayedQueueItems = contextQueue
     .filter(item => {
       if (filterStatus === 'all') return true;
       return item.status === filterStatus;
@@ -535,113 +536,136 @@ export default function Home() {
       }
     });
 
-  const SettingsModal = () => (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex justify-center items-center z-50">
-        <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-lg">
-            <h2 className="text-2xl font-bold mb-6">Application Settings</h2>
-            
-            {process.env.NODE_ENV !== 'production' && (
-              <div className="mb-4 p-2 bg-gray-100 rounded text-xs">
-                <p><strong>Debug Info:</strong></p>
-                <p>Settings loaded: {Object.keys(settings).length > 0 ? 'Yes' : 'No'}</p>
-                <p>Settings keys: {Object.keys(settings).join(', ')}</p>
-              </div>
-            )}
-            
-            <form onSubmit={handleSaveSettings}>
-                <div className="mb-4">
-                    <label htmlFor="filemoonApiKey" className="block text-sm font-medium text-gray-700 mb-1">Filemoon API Key</label>
-                    <input
-                        id="filemoonApiKey"
-                        type="text" 
-                        value={settings.filemoon_api_key || ''}
-                        onChange={(e) => setSettings(prev => ({ ...prev, filemoon_api_key: e.target.value }))}
-                        placeholder="Enter your Filemoon API Key"
-                        className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
-                    />
-                </div>
-                <div className="mb-4">
-                    <label htmlFor="filesVcApiKey" className="block text-sm font-medium text-gray-700 mb-1">Files.vc API Key</label>
-                    <input
-                        id="filesVcApiKey"
-                        type="text" 
-                        value={settings.files_vc_api_key || ''}
-                        onChange={(e) => setSettings(prev => ({ ...prev, files_vc_api_key: e.target.value }))}
-                        placeholder="Enter your Files.vc API Key"
-                        className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
-                    />
-                </div>
-                <div className="mb-4">
-                    <label htmlFor="downloadDir" className="block text-sm font-medium text-gray-700 mb-1">Download Directory</label>
-                    <input
-                        id="downloadDir"
-                        type="text"
-                        value={settings.download_directory || ''}
-                        onChange={(e) => setSettings(prev => ({ ...prev, download_directory: e.target.value }))}
-                        placeholder="e.g., C:\Users\You\Downloads\PermaVid"
-                        className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
-                    />
-                    <p className="mt-1 text-xs text-gray-500">Enter the full path for downloads.</p>
-                </div>
-                <div className="mb-6 flex items-center">
-                    <input
-                        id="deleteAfterUpload"
-                        type="checkbox"
-                        checked={settings.delete_after_upload === 'true'}
-                        onChange={(e) => setSettings(prev => ({ ...prev, delete_after_upload: e.target.checked ? 'true' : 'false' }))}
-                        className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
-                    />
-                    <label htmlFor="deleteAfterUpload" className="ml-2 block text-sm text-gray-900">
-                        Delete local file after successful upload
-                    </label>
-                </div>
-                <div className="mb-6 flex items-center">
-                    <input
-                        id="autoUpload"
-                        type="checkbox"
-                        checked={settings.auto_upload === 'true'}
-                        onChange={(e) => setSettings(prev => ({ ...prev, auto_upload: e.target.checked ? 'true' : 'false' }))}
-                        className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
-                    />
-                    <label htmlFor="autoUpload" className="ml-2 block text-sm text-gray-900">
-                        Auto Upload
-                    </label>
-                </div>
-                <div className="mb-6">
-                    <label htmlFor="uploadTarget" className="block text-sm font-medium text-gray-700 mb-1">Upload Target</label>
-                    <select
-                        id="uploadTarget"
-                        value={settings.upload_target || 'filemoon'}
-                        onChange={(e) => setSettings(prev => ({ ...prev, upload_target: e.target.value as 'filemoon' | 'files_vc' | 'both' }))}
-                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
-                    >
-                        <option value="filemoon">Filemoon</option>
-                        <option value="files_vc">Files.vc</option>
-                        <option value="both">Both</option>
-                    </select>
-                </div>
+  const SettingsModal = () => {
+    // Initialize modal's local state
+    const [modalSettings, setModalSettings] = useState<AppSettings>(createEmptySettings());
+    const [isLoadingSettings, setIsLoadingSettings] = useState(true); // Add loading state
 
-                <div className="flex justify-end space-x-4">
-                    <button
-                        type="button"
-                        onClick={() => setShowSettingsModal(false)}
-                        disabled={isSavingSettings}
-                        className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
-                    >
-                        Cancel
-                    </button>
-                    <button
-                        type="submit"
-                        disabled={isSavingSettings}
-                        className="py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
-                    >
-                        {isSavingSettings ? 'Saving...' : 'Save Settings'}
-                    </button>
-                </div>
-            </form>
+    // Fetch initial settings when modal mounts
+    useEffect(() => {
+      setIsLoadingSettings(true);
+      tauriGetAppSettings() // Call the getAppSettings function from context
+        .then(fetchedSettings => {
+          setModalSettings(fetchedSettings || createEmptySettings());
+        })
+        .catch(err => {
+          console.error("Error fetching settings for modal:", err);
+          // Keep default empty settings on error
+        })
+        .finally(() => {
+          setIsLoadingSettings(false);
+        });
+    }, []); // Empty dependency array: run only once when modal mounts
+
+    const handleModalSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+        e.preventDefault();
+        handleSaveSettings(modalSettings); // Pass local modal state to save handler
+    }
+
+    return (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex justify-center items-center z-50">
+            <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-lg">
+                <h2 className="text-2xl font-bold mb-6">Application Settings</h2>
+                
+                {isLoadingSettings ? (
+                  <p>Loading settings...</p>
+                ) : (
+                  <form onSubmit={handleModalSubmit}>
+                    <div className="mb-4">
+                        <label htmlFor="filemoonApiKey" className="block text-sm font-medium text-gray-700 mb-1">Filemoon API Key</label>
+                        <input
+                            id="filemoonApiKey"
+                            type="text" 
+                            value={modalSettings.filemoon_api_key || ''}
+                            onChange={(e) => setModalSettings(prev => ({ ...prev, filemoon_api_key: e.target.value }))}
+                            placeholder="Enter your Filemoon API Key"
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
+                        />
+                    </div>
+                    <div className="mb-4">
+                        <label htmlFor="filesVcApiKey" className="block text-sm font-medium text-gray-700 mb-1">Files.vc API Key</label>
+                        <input
+                            id="filesVcApiKey"
+                            type="text" 
+                            value={modalSettings.files_vc_api_key || ''}
+                            onChange={(e) => setModalSettings(prev => ({ ...prev, files_vc_api_key: e.target.value }))}
+                            placeholder="Enter your Files.vc API Key"
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
+                        />
+                    </div>
+                    <div className="mb-4">
+                        <label htmlFor="downloadDir" className="block text-sm font-medium text-gray-700 mb-1">Download Directory</label>
+                        <input
+                            id="downloadDir"
+                            type="text"
+                            value={modalSettings.download_directory || ''}
+                            onChange={(e) => setModalSettings(prev => ({ ...prev, download_directory: e.target.value }))}
+                            placeholder="e.g., C:\Users\You\Downloads\PermaVid"
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
+                        />
+                        <p className="mt-1 text-xs text-gray-500">Enter the full path for downloads.</p>
+                    </div>
+                    <div className="mb-6 flex items-center">
+                        <input
+                            id="deleteAfterUpload"
+                            type="checkbox"
+                            checked={modalSettings.delete_after_upload === 'true'}
+                            onChange={(e) => setModalSettings(prev => ({ ...prev, delete_after_upload: e.target.checked ? 'true' : 'false' }))}
+                            className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                        />
+                        <label htmlFor="deleteAfterUpload" className="ml-2 block text-sm text-gray-900">
+                            Delete local file after successful upload
+                        </label>
+                    </div>
+                    <div className="mb-6 flex items-center">
+                        <input
+                            id="autoUpload"
+                            type="checkbox"
+                            checked={modalSettings.auto_upload === 'true'}
+                            onChange={(e) => setModalSettings(prev => ({ ...prev, auto_upload: e.target.checked ? 'true' : 'false' }))}
+                            className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                        />
+                        <label htmlFor="autoUpload" className="ml-2 block text-sm text-gray-900">
+                            Auto Upload
+                        </label>
+                    </div>
+                    <div className="mb-6">
+                        <label htmlFor="uploadTarget" className="block text-sm font-medium text-gray-700 mb-1">Upload Target</label>
+                        <select
+                            id="uploadTarget"
+                            value={modalSettings.upload_target || 'filemoon'}
+                            onChange={(e) => setModalSettings(prev => ({ ...prev, upload_target: e.target.value as 'filemoon' | 'files_vc' | 'both' }))}
+                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+                        >
+                            <option value="filemoon">Filemoon</option>
+                            <option value="files_vc">Files.vc</option>
+                            <option value="both">Both</option>
+                        </select>
+                    </div>
+
+                    <div className="flex justify-end space-x-4">
+                        <button
+                            type="button"
+                            onClick={() => setShowSettingsModal(false)}
+                            disabled={isSavingSettings}
+                            className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={isSavingSettings}
+                            className="py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                        >
+                            {isSavingSettings ? 'Saving...' : 'Save Settings'}
+                        </button>
+                    </div>
+                  </form>
+                )}
+            </div>
         </div>
-    </div>
-  );
+    );
+  }
 
   return (
     <main className="flex min-h-screen flex-col items-center p-8 md:p-24">

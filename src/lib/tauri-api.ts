@@ -13,6 +13,7 @@ export interface QueueItem {
   thumbnail_url?: string;
   added_at?: number;
   updated_at?: number;
+  local_path?: string;
 }
 
 export interface AppSettings {
@@ -233,17 +234,23 @@ export async function restartEncoding(id: string): Promise<{success: boolean, me
 // --- ADDED: Function to get gallery items via Tauri ---
 export async function getGalleryItems(): Promise<{success: boolean, message: string, data?: QueueItem[]}> {
   try {
+    console.log("[Tauri API] Calling invoke('get_gallery_items')...");
     // Response structure matches Rust Response<Vec<QueueItem>>
     const response: any = await invoke('get_gallery_items');
+    
+    console.log("[Tauri API] Raw response from get_gallery_items:", JSON.stringify(response, null, 2));
+
     if (!response || !response.success) {
+      console.warn("[Tauri API] get_gallery_items response check failed. Response:", response);
       throw new Error(response?.message || 'Failed to get gallery items from backend.');
     }
+    console.log("[Tauri API] get_gallery_items successful. Returning data.");
     return { success: true, message: response.message, data: response.data || [] };
   } catch (error) {
-    console.error('Error getting gallery items via Tauri:', error);
+    console.error('[Tauri API] Error in getGalleryItems catch block:', error);
     return { 
         success: false, 
-        message: error instanceof Error ? error.message : 'Unknown error getting gallery items',
+        message: `Error fetching gallery items: ${error instanceof Error ? error.message : 'Unknown error'}`,
         data: []
     };
   }

@@ -101,6 +101,10 @@ impl Database {
             [],
         )?;
         
+        // --- ADDED: Ensure local_path column exists in queue table --- 
+        Self::ensure_column_exists(&conn, "queue", "local_path", "TEXT")?;
+        // --- END ADDED ---
+
         // Check if we need to import old data
         let database = Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -247,6 +251,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at 
              FROM queue 
+             WHERE status != 'encoded'
              ORDER BY added_at DESC"
         )?;
         
@@ -277,12 +282,12 @@ impl Database {
     
     // New function to get items suitable for the gallery
     pub fn get_gallery_items(&self) -> Result<Vec<QueueItem>> {
-        // Fetch items with status 'uploaded' or 'encoded'
+        // Fetch items with status 'encoded'
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at, local_path 
-             FROM queue 
-             WHERE status = 'uploaded' OR status = 'encoded' 
+            "SELECT id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at, local_path
+             FROM queue
+             WHERE status = 'encoded'
              ORDER BY updated_at DESC"
         )?;
         
@@ -693,4 +698,27 @@ impl Database {
         }
     }
     // --- END ADDED ---
+
+    // --- ADDED: Helper function to check for and add a column --- 
+    fn ensure_column_exists(
+        conn: &Connection, 
+        table_name: &str, 
+        column_name: &str, 
+        column_definition: &str
+    ) -> Result<()> {
+        let query = format!("PRAGMA table_info({});", table_name);
+        let mut stmt = conn.prepare(&query)?;
+        let column_exists = stmt
+            .query_map([], |row| Ok(row.get::<_, String>(1)?))?
+            .any(|res| res.map_or(false, |name| name == column_name));
+
+        if !column_exists {
+            println!("Migrating schema: Adding column '{}' to table '{}'", column_name, table_name);
+            let alter_query = format!("ALTER TABLE {} ADD COLUMN {} {}", table_name, column_name, column_definition);
+            conn.execute(&alter_query, [])?;
+            println!("Schema migration successful.");
+        }
+        Ok(())
+    }
+    // --- END ADDED --- 
 } 

@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, ReactNode, useMemo, useCallback } from 'react';
 import { 
   isTauri,
   QueueItem,
@@ -21,19 +21,19 @@ import {
   restartEncoding,
   getGalleryItems
 } from '@/lib/tauri-api';
+import { createEmptySettings } from '@/lib/settings-helper';
 
 // Define context value type
 interface TauriContextType {
   isReady: boolean;
   isTauriEnvironment: boolean;
   queueItems: QueueItem[];
-  settings: AppSettings;
   fetchQueueItems: () => Promise<void>;
   addToQueue: (item: QueueItem) => Promise<string>;
   updateItem: (item: QueueItem) => Promise<void>;
   updateStatus: (id: string, status: string, message?: string) => Promise<void>;
   clearItems: (statusTypes: string[]) => Promise<void>;
-  getAppSettings: () => Promise<void>;
+  getAppSettings: () => Promise<AppSettings>;
   saveAppSettings: (settings: AppSettings) => Promise<void>;
   openLink: (url: string) => Promise<void>;
   getDefaultDownloadDir: () => Promise<string>;
@@ -50,13 +50,12 @@ const TauriContext = createContext<TauriContextType>({
   isReady: false,
   isTauriEnvironment: false,
   queueItems: [],
-  settings: {},
   fetchQueueItems: async () => {},
   addToQueue: async () => "",
   updateItem: async () => {},
   updateStatus: async () => {},
   clearItems: async () => {},
-  getAppSettings: async () => {},
+  getAppSettings: async () => createEmptySettings(),
   saveAppSettings: async () => {},
   openLink: async () => {},
   getDefaultDownloadDir: async () => "",
@@ -73,7 +72,31 @@ export function TauriProvider({ children }: { children: ReactNode }) {
   const [isReady, setIsReady] = useState(false);
   const [isTauriEnvironment, setIsTauriEnvironment] = useState(false);
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
-  const [settings, setSettings] = useState<AppSettings>({});
+
+  const fetchQueueItems = useCallback(async () => {
+    try {
+      const items = await getQueueItems();
+      setQueueItems(items);
+    } catch (err) {
+      console.error("Error fetching queue items:", err);
+    }
+  }, []);
+
+  const getAppSettings = useCallback(async (): Promise<AppSettings> => {
+    try {
+      console.log("Fetching application settings...");
+      const appSettings = await getSettings();
+      console.log("Settings received:", appSettings);
+      return appSettings || createEmptySettings();
+    } catch (err) {
+      console.error("Error fetching settings:", err);
+      return createEmptySettings();
+    }
+  }, []);
+
+  const saveAppSettings = useCallback(async (newSettings: AppSettings) => {
+    await saveSettings(newSettings);
+  }, []);
 
   useEffect(() => {
     const initialize = async () => {
@@ -94,145 +117,111 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     };
 
     initialize();
-  }, []);
+  }, [fetchQueueItems, getAppSettings]);
 
-  const fetchQueueItems = async () => {
-    try {
-      const items = await getQueueItems();
-      setQueueItems(items);
-    } catch (err) {
-      console.error("Error fetching queue items:", err);
-    }
-  };
-
-  const addToQueue = async (item: QueueItem) => {
+  const addToQueue = useCallback(async (item: QueueItem) => {
     const id = await addQueueItem(item);
     await fetchQueueItems();
     return id;
-  };
+  }, [fetchQueueItems]);
 
-  const updateItem = async (item: QueueItem) => {
+  const updateItem = useCallback(async (item: QueueItem) => {
     await updateQueueItem(item);
     await fetchQueueItems();
-  };
+  }, [fetchQueueItems]);
 
-  const updateStatus = async (id: string, status: string, message?: string) => {
+  const updateStatus = useCallback(async (id: string, status: string, message?: string) => {
     await updateItemStatus(id, status, message);
     await fetchQueueItems();
-  };
+  }, [fetchQueueItems]);
 
-  const clearItems = async (statusTypes: string[]) => {
+  const clearItems = useCallback(async (statusTypes: string[]) => {
     await clearCompletedItems(statusTypes);
     await fetchQueueItems();
-  };
+  }, [fetchQueueItems]);
 
-  const getAppSettings = async () => {
-    try {
-      console.log("Fetching application settings...");
-      const appSettings = await getSettings();
-      console.log("Settings received:", appSettings);
-      setSettings(appSettings || {});
-    } catch (err) {
-      console.error("Error fetching settings:", err);
-      // Ensure we always have a valid settings object
-      setSettings({});
-    }
-  };
-
-  const saveAppSettings = async (newSettings: AppSettings) => {
-    await saveSettings(newSettings);
-    setSettings(newSettings);
-  };
-
-  const openLink = async (url: string) => {
+  const openLink = useCallback(async (url: string) => {
     await openExternalLink(url);
-  };
+  }, []);
 
-  const getDefaultDownloadDir = async () => {
+  const getDefaultDownloadDir = useCallback(async () => {
     if (isTauriEnvironment) {
       return await getDownloadDirectory();
     }
     return "";
-  };
+  }, [isTauriEnvironment]);
 
-  const handleImportFromFile = async (path: string) => {
+  const handleImportFromFile = useCallback(async (path: string) => {
     try {
       await importFromFile(path);
-      // Refresh data after import
       await fetchQueueItems();
       await getAppSettings();
     } catch (err) {
       console.error("Error importing data:", err);
     }
-  };
+  }, [fetchQueueItems, getAppSettings]);
 
-  const handleRetryItem = async (id: string) => {
+  const handleRetryItem = useCallback(async (id: string) => {
     try {
       await retryItem(id);
-      // Refresh queue data after retry
       await fetchQueueItems();
     } catch (err) {
       console.error(`Error retrying item ${id}:`, err);
-      // Optionally show an error message to the user
     }
-  };
+  }, [fetchQueueItems]);
 
-  const handleTriggerUpload = async (id: string) => {
-    // Invoke the Tauri command via the API wrapper
+  const handleTriggerUpload = useCallback(async (id: string) => {
     const result = await triggerUpload(id);
-    // Refresh queue data after upload attempt
-    await fetchQueueItems(); 
-    // Return the result so the UI can display messages/errors
-    return result; 
-  };
+    await fetchQueueItems();
+    return result;
+  }, [fetchQueueItems]);
 
-  const handleCancelItem = async (id: string) => {
-    // Invoke the Tauri command via the API wrapper
+  const handleCancelItem = useCallback(async (id: string) => {
     const result = await cancelItem(id);
-    // Refresh queue data after cancel attempt
-    await fetchQueueItems(); 
-    // Return the result so the UI can display messages/errors
-    return result; 
-  };
+    await fetchQueueItems();
+    return result;
+  }, [fetchQueueItems]);
 
-  const handleRestartEncoding = async (id: string) => {
-    // Invoke the Tauri command via the API wrapper
+  const handleRestartEncoding = useCallback(async (id: string) => {
     const result = await restartEncoding(id);
-    // Refresh queue data after restart attempt
-    await fetchQueueItems(); 
-    // Return the result so the UI can display messages/errors
-    return result; 
-  };
+    await fetchQueueItems();
+    return result;
+  }, [fetchQueueItems]);
 
-  const handleGetGalleryItems = async () => {
-    // Invoke the Tauri command via the API wrapper
+  const handleGetGalleryItems = useCallback(async () => {
     const result = await getGalleryItems();
-    // Return the result so the UI can use the data/messages/errors
-    return result; 
-  };
+    return result;
+  }, []);
+
+  const contextValue = useMemo(() => ({
+    isReady,
+    isTauriEnvironment,
+    queueItems,
+    fetchQueueItems,
+    addToQueue,
+    updateItem,
+    updateStatus,
+    clearItems,
+    getAppSettings,
+    saveAppSettings,
+    openLink,
+    getDefaultDownloadDir,
+    importFromFile: handleImportFromFile,
+    retryItem: handleRetryItem,
+    triggerUpload: handleTriggerUpload,
+    cancelItem: handleCancelItem,
+    restartEncoding: handleRestartEncoding,
+    getGalleryItems: handleGetGalleryItems
+  }), [
+    isReady, isTauriEnvironment, queueItems,
+    fetchQueueItems, addToQueue, updateItem, updateStatus, clearItems,
+    getAppSettings, saveAppSettings, openLink, getDefaultDownloadDir,
+    handleImportFromFile, handleRetryItem, handleTriggerUpload,
+    handleCancelItem, handleRestartEncoding, handleGetGalleryItems
+  ]);
 
   return (
-    <TauriContext.Provider value={{
-      isReady,
-      isTauriEnvironment,
-      queueItems,
-      settings,
-      fetchQueueItems,
-      addToQueue,
-      updateItem,
-      updateStatus,
-      clearItems,
-      getAppSettings,
-      saveAppSettings,
-      openLink,
-      getDefaultDownloadDir,
-      importFromFile: handleImportFromFile,
-      retryItem: handleRetryItem,
-      triggerUpload: handleTriggerUpload,
-      cancelItem: handleCancelItem,
-      restartEncoding: handleRestartEncoding,
-      getGalleryItems: handleGetGalleryItems
-    }}>
+    <TauriContext.Provider value={contextValue}>
       {children}
     </TauriContext.Provider>
   );

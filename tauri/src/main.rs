@@ -598,11 +598,15 @@ fn main() {
             }
             let db = Database::new(&app.handle()).expect("Failed to initialize database");
             app.manage(AppState { db: Arc::new(Mutex::new(db)) });
-            #[cfg(debug_assertions)]
+            
+            // --- Temporarily enable DevTools for release build debugging --- 
+            // #[cfg(debug_assertions)]
             {
                 let window = app.get_window("main").unwrap();
                 window.open_devtools();
+                window.close_devtools(); // Close initially, user can reopen with F12
             }
+            // --- End Temporary DevTools --- 
             Ok(())
         })
         .run(tauri::generate_context!())

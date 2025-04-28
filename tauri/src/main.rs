@@ -6,12 +6,14 @@ mod db;
 
 use db::{Database, QueueItem, AppSettings};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{Manager, State};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use reqwest::multipart;
 use tokio::fs::File;
+use tokio::time::sleep;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use futures_util::stream::TryStreamExt;
 use bytes::Bytes;
@@ -65,6 +67,11 @@ struct FilemoonRestartResponse {
     // Add other fields if the API returns more data
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct FilemoonEncodingStatusResponse {
+    // Add other fields if the API returns more data
+}
+
 #[tauri::command]
 fn open_external_link(window: tauri::Window, url: String) -> Result<(), String> {
     match window.shell_scope().open(&url, None) {
@@ -90,11 +97,15 @@ async fn get_queue_items(app_state: State<'_, AppState>) -> Result<Response<Vec<
 async fn add_queue_item(item: QueueItem, app_state: State<'_, AppState>) -> Result<Response<String>, String> {
     let db = app_state.db.lock().unwrap();
     match db.add_queue_item(&item) {
-        Ok(id) => Ok(Response {
-            success: true,
-            message: "Item added to queue successfully".to_string(),
-            data: Some(id),
-        }),
+        Ok(id) => {
+            // After adding, immediately signal the background task (if possible)
+            // Or rely on its periodic check
+            Ok(Response {
+                success: true,
+                message: "Item added to queue successfully".to_string(),
+                data: Some(id),
+            })
+        },
         Err(e) => Err(e.to_string()),
     }
 }
@@ -267,40 +278,38 @@ async fn cancel_item(id: String, app_state: State<'_, AppState>) -> Result<Respo
 
 // --- ADDED: Command to restart Filemoon encoding ---
 #[tauri::command]
-#[tokio::main]
 async fn restart_encoding(id: String, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
-    let db_lock = app_state.db.lock().unwrap();
+    let filecode: String;
+    let api_key: String;
+    let item_id_clone = id.clone(); // Clone id for potential use after drop
 
-    // 1. Get item details (need filemoon_url which contains filecode)
-    let item = match db_lock.get_item_by_id(&id) {
-        Ok(Some(i)) => i,
-        Ok(None) => return Err(format!("Restart encoding failed: Item {} not found.", id)),
-        Err(e) => return Err(format!("DB Error getting item for restart: {}", e)),
-    };
+    // Scope to get data from DB and drop lock
+    {
+        let db_lock = app_state.db.lock().unwrap();
+        let item = match db_lock.get_item_by_id(&id) {
+            Ok(Some(i)) => i,
+            Ok(None) => return Err(format!("Restart encoding failed: Item {} not found.", id)),
+            Err(e) => return Err(format!("DB Error getting item for restart: {}", e)),
+        };
 
-    let filecode = match item.filemoon_url {
-        Some(fc) if !fc.is_empty() => fc,
-        _ => { 
-            let err_msg = format!("Restart encoding failed: Filemoon filecode not found for item.");
-            return Err(err_msg); 
-        }
-    };
+        filecode = match item.filemoon_url {
+            Some(fc) if !fc.is_empty() => fc,
+            _ => return Err(format!("Restart encoding failed: Filemoon filecode not found for item.")),
+        };
 
-    // 2. Get settings (need Filemoon API key)
-    let settings = match db_lock.get_settings() {
-        Ok(s) => s,
-        Err(e) => return Err(format!("Failed to get settings for restart: {}", e)),
-    };
+        let settings = match db_lock.get_settings() {
+            Ok(s) => s,
+            Err(e) => return Err(format!("Failed to get settings for restart: {}", e)),
+        };
 
-    let api_key = match settings.filemoon_api_key {
-        Some(key) if !key.is_empty() => key,
-        _ => return Err("Restart encoding failed: Filemoon API key not configured".to_string()),
-    };
-    
-    // Release DB lock before async HTTP call
-    drop(db_lock); 
+        api_key = match settings.filemoon_api_key {
+            Some(key) if !key.is_empty() => key,
+            _ => return Err("Restart encoding failed: Filemoon API key not configured".to_string()),
+        };
+        // db_lock is dropped here
+    }
 
-    // 3. Call Filemoon Restart API
+    // Perform HTTP request outside of DB lock scope
     println!("Attempting to restart encoding for filecode: {}", filecode);
     let client = reqwest::Client::new();
     let params = [("key", &api_key), ("file_code", &filecode)];
@@ -315,14 +324,12 @@ async fn restart_encoding(id: String, app_state: State<'_, AppState>) -> Result<
                 Ok(resp_body) => {
                     if status.is_success() && resp_body.status == 200 {
                         println!("Filemoon restart encoding request successful for {}", filecode);
-                        // Update item status back to encoding (or maybe uploading?)
-                        let db_lock_after = app_state.db.lock().unwrap();
-                        let _ = db_lock_after.update_item_status(&id, "encoding", Some("Restarted encoding".to_string()));
-                        // Optionally clear encoding progress if applicable
-                        // let mut updated_item = db_lock_after.get_item_by_id(&id).map_err(|e| format!("DB Error: {}", e))?.unwrap();
-                        // updated_item.encoding_progress = Some(0);
-                        // let _ = db_lock_after.update_queue_item(&updated_item);
-
+                        // Re-acquire lock to update status
+                        {
+                            let db_lock_after = app_state.db.lock().unwrap();
+                            let _ = db_lock_after.update_item_status(&item_id_clone, "encoding", Some("Restarted encoding".to_string()));
+                            // db_lock_after dropped here
+                        }
                         Ok(Response {
                             success: true,
                             message: format!("Successfully requested encoding restart for filecode {}", filecode),
@@ -331,15 +338,24 @@ async fn restart_encoding(id: String, app_state: State<'_, AppState>) -> Result<
                     } else {
                         let err_msg = format!("Filemoon restart API Error (Status {}): {}", resp_body.status, resp_body.msg);
                         println!("{}", err_msg);
-                        // Maybe update status to failed with this message?
-                         let db_lock_after = app_state.db.lock().unwrap();
-                         let _ = db_lock_after.update_item_status(&id, "failed", Some(err_msg.clone()));
+                        // Re-acquire lock to update status to failed
+                        {
+                            let db_lock_after = app_state.db.lock().unwrap();
+                            let _ = db_lock_after.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                             // db_lock_after dropped here
+                        }
                         Err(err_msg)
                     }
                 }
                 Err(e) => {
                     let err_msg = format!("Failed to parse Filemoon restart response: {}", e);
                     println!("{}", err_msg);
+                     // Attempt to update status to failed even on parse error
+                     {
+                        let db_lock_after = app_state.db.lock().unwrap();
+                        let _ = db_lock_after.update_item_status(&item_id_clone, "failed", Some(format!("Parse Error: {}", e)));
+                        // db_lock_after dropped here
+                    }
                     Err(err_msg)
                 }
             }
@@ -347,6 +363,12 @@ async fn restart_encoding(id: String, app_state: State<'_, AppState>) -> Result<
         Err(e) => {
             let err_msg = format!("Filemoon restart request failed: {}", e);
             println!("{}", err_msg);
+            // Attempt to update status to failed on request error
+            {
+                let db_lock_after = app_state.db.lock().unwrap();
+                let _ = db_lock_after.update_item_status(&item_id_clone, "failed", Some(format!("Request Error: {}", e)));
+                // db_lock_after dropped here
+            }
             Err(err_msg)
         }
     }
@@ -369,59 +391,87 @@ async fn get_gallery_items(app_state: State<'_, AppState>) -> Result<Response<Ve
 // --- END ADDED Command ---
 
 #[tauri::command]
-#[tokio::main]
 async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Response<String>, String> {
-    let db = app_state.db.lock().unwrap();
-    let item = match db.get_item_by_id(&id) {
-        Ok(Some(item)) => item,
-        Ok(None) => return Err(format!("Upload failed: Item {} not found.", id)),
-        Err(e) => return Err(format!("Database error retrieving item: {}", e)),
-    };
-    let settings = match db.get_settings() {
-        Ok(settings) => settings,
-        Err(e) => return Err(format!("Failed to retrieve settings: {}", e)),
-    };
-    if item.status != "completed" && item.status != "encoded" {
-        return Err(format!("Item {} is not in a completed state (status: {}). Cannot upload.", id, item.status));
-    }
-    let local_path_str = match &item.local_path {
-        Some(p) => p.clone(),
-        None => { 
-            let err_msg = format!("Upload failed: Local file path not found for item.");
-            return Err(err_msg); 
+    let local_path_str: String;
+    let filename: String;
+    let upload_target: String;
+    let settings_clone: AppSettings; // Clone settings to use outside lock
+    let item_id_clone = id.clone(); // Clone id
+
+    // Scope 1: Get initial data and mark as uploading
+    {
+        let db = app_state.db.lock().unwrap();
+        let item = match db.get_item_by_id(&id) {
+            Ok(Some(item)) => item,
+            Ok(None) => return Err(format!("Upload failed: Item {} not found.", id)),
+            Err(e) => return Err(format!("Database error retrieving item: {}", e)),
+        };
+
+        settings_clone = match db.get_settings() {
+            Ok(settings) => settings,
+            Err(e) => return Err(format!("Failed to retrieve settings: {}", e)),
+        };
+
+        if item.status != "completed" && item.status != "encoded" {
+            return Err(format!("Item {} is not in a completed state (status: {}). Cannot upload.", id, item.status));
         }
-    };
+
+        local_path_str = match &item.local_path {
+            Some(p) => p.clone(),
+            None => return Err(format!("Upload failed: Local file path not found for item.")),
+        };
+
+        let local_path_check = Path::new(&local_path_str); // Need Path for filename
+         filename = local_path_check.file_name().and_then(|n| n.to_str()).unwrap_or("unknown_file").to_string();
+
+        if let Err(e) = db.update_item_status(&id, "uploading", Some("Starting upload...".to_string())) {
+            return Err(format!("Failed to update item status to uploading: {}", e));
+        }
+        
+        upload_target = settings_clone.upload_target.clone().unwrap_or_else(|| "filemoon".to_string());
+        // db lock dropped here
+    }
+
+    // Check file existence outside lock
     let local_path = Path::new(&local_path_str);
-    if !local_path.exists() {
-        let _ = db.update_item_status(&id, "failed", Some(format!("Local file not found at: {}", local_path_str)));
+     if !local_path.exists() {
+        // Re-acquire lock to update status
+        {
+             let db_err = app_state.db.lock().unwrap();
+             let _ = db_err.update_item_status(&item_id_clone, "failed", Some(format!("Local file not found at: {}", local_path_str)));
+        }
         return Err(format!("Upload failed: Local file does not exist at {}", local_path_str));
     }
-    let filename = local_path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown_file").to_string();
-    if let Err(e) = db.update_item_status(&id, "uploading", Some("Starting upload...".to_string())) {
-        return Err(format!("Failed to update item status to uploading: {}", e));
-    }
-    drop(db);
 
-    let upload_target = settings.upload_target.clone().unwrap_or_else(|| "filemoon".to_string());
+    // Perform uploads outside lock
     let mut final_message = "Upload status unknown".to_string();
     let mut success = false;
     let client = reqwest::Client::new();
 
+    // --- Filemoon Upload Logic --- 
     if upload_target == "filemoon" || upload_target == "both" {
-        let api_key = match settings.filemoon_api_key.clone() {
+        let api_key = match settings_clone.filemoon_api_key.clone() {
             Some(key) if !key.is_empty() => key,
             _ => {
-                let db_lock = app_state.db.lock().unwrap();
-                let _ = db_lock.update_item_status(&id, "failed", Some("Filemoon API key not configured".to_string()));
+                 // Re-acquire lock to update status
+                 {
+                     let db_err = app_state.db.lock().unwrap();
+                     let _ = db_err.update_item_status(&item_id_clone, "failed", Some("Filemoon API key not configured".to_string()));
+                 }
                 return Err("Filemoon API key not configured".to_string());
             }
         };
         println!("Attempting to upload {} to Filemoon...", filename);
+        
+        // File open needs to be async
         let file = match File::open(&local_path).await {
             Ok(f) => f,
             Err(e) => {
-                 let db_lock = app_state.db.lock().unwrap();
-                 let _ = db_lock.update_item_status(&id, "failed", Some(format!("Failed to open file: {}", e)));
+                // Re-acquire lock to update status
+                 {
+                     let db_err = app_state.db.lock().unwrap();
+                     let _ = db_err.update_item_status(&item_id_clone, "failed", Some(format!("Failed to open file: {}", e)));
+                 }
                  return Err(format!("Failed to open file: {}", e));
             }
         };
@@ -430,6 +480,7 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         let form = multipart::Form::new()
             .text("key", api_key)
             .part("file", multipart::Part::stream(file_body).file_name(filename.clone()));
+            
         match client.post("https://api.filemoon.sx/api/upload/server").multipart(form).send().await {
             Ok(response) => {
                 let status = response.status();
@@ -438,58 +489,76 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                         if status.is_success() && resp_body.status == 200 && resp_body.result.as_ref().and_then(|r| r.files.as_ref()).map_or(false, |f| !f.is_empty()) {
                             let filecode = resp_body.result.unwrap().files.unwrap().remove(0).filecode;
                             println!("Filemoon upload successful! Filecode: {}", filecode);
-                            let db_lock = app_state.db.lock().unwrap();
-                            let _ = db_lock.update_item_status(&id, "uploaded", Some(format!("Filemoon: {}", filecode)));
-                            let mut updated_item = db_lock.get_item_by_id(&id).map_err(|e| format!("DB Error: {}", e))?.unwrap();
-                            updated_item.filemoon_url = Some(filecode.clone());
-                            if let Err(e) = db_lock.update_queue_item(&updated_item) { eprintln!("Failed to update Filemoon URL in DB: {}", e); }
+                            // Re-acquire lock to update status
+                            {
+                                let db_lock = app_state.db.lock().unwrap();
+                                let _ = db_lock.update_item_status(&item_id_clone, "uploaded", Some(format!("Filemoon: {}", filecode)));
+                                let mut updated_item = db_lock.get_item_by_id(&item_id_clone).map_err(|e| format!("DB Error: {}", e))?.unwrap();
+                                updated_item.filemoon_url = Some(filecode.clone());
+                                if let Err(e) = db_lock.update_queue_item(&updated_item) { eprintln!("Failed to update Filemoon URL in DB: {}", e); }
+                            }
                             final_message = format!("Upload to Filemoon successful (Filecode: {}).", filecode);
                             success = true;
                         } else {
-                             let err_msg = format!("Filemoon API Error (Status {}): {}", resp_body.status, resp_body.msg);
-                             println!("{}", err_msg);
-                             let db_lock = app_state.db.lock().unwrap();
-                             let _ = db_lock.update_item_status(&id, "failed", Some(err_msg.clone()));
+                            let err_msg = format!("Filemoon API Error (Status {}): {}", resp_body.status, resp_body.msg);
+                            println!("{}", err_msg);
+                             // Re-acquire lock to update status
+                            {
+                                 let db_lock = app_state.db.lock().unwrap();
+                                 let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                            }
                              final_message = err_msg;
-                             success = false;
                         }
                     }
                     Err(e) => {
                         let err_msg = format!("Failed to parse Filemoon response: {}", e);
                         println!("{}", err_msg);
-                        let db_lock = app_state.db.lock().unwrap();
-                        let _ = db_lock.update_item_status(&id, "failed", Some(err_msg.clone()));
+                         // Re-acquire lock to update status
+                         {
+                            let db_lock = app_state.db.lock().unwrap();
+                            let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                         }
                         final_message = err_msg;
-                        success = false;
                     }
                 }
             }
             Err(e) => {
                 let err_msg = format!("Filemoon request failed: {}", e);
                 println!("{}", err_msg);
-                let db_lock = app_state.db.lock().unwrap();
-                let _ = db_lock.update_item_status(&id, "failed", Some(err_msg.clone()));
+                 // Re-acquire lock to update status
+                 {
+                    let db_lock = app_state.db.lock().unwrap();
+                    let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                 }
                 final_message = err_msg;
-                success = false;
             }
         }
     }
 
+    // --- Files.vc Upload Logic --- 
     if upload_target == "files_vc" || (upload_target == "both" && !success) {
-        let api_key = match settings.files_vc_api_key.clone() {
+        let api_key = match settings_clone.files_vc_api_key.clone() {
             Some(key) if !key.is_empty() => key,
             _ => {
-                let db_lock = app_state.db.lock().unwrap();
-                let _ = db_lock.update_item_status(&id, "failed", Some("Files.vc API key not configured".to_string()));
+                 // Re-acquire lock to update status
+                 {
+                     let db_lock = app_state.db.lock().unwrap();
+                     let _ = db_lock.update_item_status(&item_id_clone, "failed", Some("Files.vc API key not configured".to_string()));
+                 }
                 return Err("Files.vc API key not configured".to_string());
             }
         };
         println!("Attempting to upload {} to Files.vc...", filename);
+        
+        // File open needs to be async
         let file = match File::open(&local_path).await {
             Ok(f) => f,
             Err(e) => {
-                 let db_lock = app_state.db.lock().unwrap();
-                 let _ = db_lock.update_item_status(&id, "failed", Some(format!("Failed to open file: {}", e)));
+                 // Re-acquire lock to update status
+                 {
+                     let db_lock = app_state.db.lock().unwrap();
+                     let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(format!("Failed to open file: {}", e)));
+                 }
                  return Err(format!("Failed to open file: {}", e));
             }
         };
@@ -498,6 +567,7 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         let form = multipart::Form::new()
             .text("key", api_key)
             .part("file", multipart::Part::stream(file_body).file_name(filename));
+            
         match client.post("https://api.files.vc/upload").multipart(form).send().await {
              Ok(response) => {
                 let status = response.status();
@@ -507,57 +577,208 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                             let result_data = resp_body.result.unwrap();
                             let file_url = result_data.url;
                             println!("Files.vc upload successful! URL: {}", file_url);
-                            let db_lock = app_state.db.lock().unwrap();
-                             let _ = db_lock.update_item_status(&id, "uploaded", Some(format!("Files.vc: {}", file_url)));
-                             let mut updated_item = db_lock.get_item_by_id(&id).map_err(|e| format!("DB Error: {}", e))?.unwrap();
-                             updated_item.files_vc_url = Some(file_url.clone());
-                             if let Err(e) = db_lock.update_queue_item(&updated_item) { eprintln!("Failed to update Files.vc URL in DB: {}", e); }
+                             // Re-acquire lock to update status
+                             {
+                                 let db_lock = app_state.db.lock().unwrap();
+                                 let _ = db_lock.update_item_status(&item_id_clone, "uploaded", Some(format!("Files.vc: {}", file_url)));
+                                 let mut updated_item = db_lock.get_item_by_id(&item_id_clone).map_err(|e| format!("DB Error: {}", e))?.unwrap();
+                                 updated_item.files_vc_url = Some(file_url.clone());
+                                 if let Err(e) = db_lock.update_queue_item(&updated_item) { eprintln!("Failed to update Files.vc URL in DB: {}", e); }
+                             }
                             final_message = format!("Upload to Files.vc successful (URL: {}).", file_url);
                             success = true;
                          } else {
                              let err_msg = format!("Files.vc API Error (Status {}): {}", resp_body.status, resp_body.msg);
                              println!("{}", err_msg);
-                             let db_lock = app_state.db.lock().unwrap();
-                             let _ = db_lock.update_item_status(&id, "failed", Some(err_msg.clone()));
+                              // Re-acquire lock to update status
+                             {
+                                 let db_lock = app_state.db.lock().unwrap();
+                                 let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                             }
                              final_message = err_msg;
-                             success = false;
                          }
                     }
                     Err(e) => {
                         let err_msg = format!("Failed to parse Files.vc response: {}", e);
                         println!("{}", err_msg);
-                        let db_lock = app_state.db.lock().unwrap();
-                        let _ = db_lock.update_item_status(&id, "failed", Some(err_msg.clone()));
+                         // Re-acquire lock to update status
+                         {
+                             let db_lock = app_state.db.lock().unwrap();
+                             let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                         }
                         final_message = err_msg;
-                        success = false;
                     }
                  }
             }
             Err(e) => {
                  let err_msg = format!("Files.vc request failed: {}", e);
                  println!("{}", err_msg);
-                 let db_lock = app_state.db.lock().unwrap();
-                 let _ = db_lock.update_item_status(&id, "failed", Some(err_msg.clone()));
+                  // Re-acquire lock to update status
+                 {
+                     let db_lock = app_state.db.lock().unwrap();
+                     let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                 }
                  final_message = err_msg;
-                 success = false;
             }
         }
     }
 
+    // Final result handling (delete file if needed)
     if success {
-        if settings.delete_after_upload.unwrap_or_else(|| "false".to_string()) == "true" {
+        if settings_clone.delete_after_upload.unwrap_or_else(|| "false".to_string()) == "true" {
              match fs::remove_file(&local_path) {
                  Ok(_) => println!("Successfully deleted local file: {}", local_path_str),
                  Err(e) => eprintln!("Failed to delete local file {}: {}", local_path_str, e),
              }
         }
-        Ok(Response { success: true, message: final_message, data: Some(id) })
+        Ok(Response { success: true, message: final_message, data: Some(item_id_clone) })
     } else {
+        // If all uploads failed, the last error message is in final_message
+        // The status would have been set to failed within the respective upload blocks
         Err(final_message)
     }
 }
 
-fn main() {
+// --- Background Queue Processing ---
+
+async fn process_queue_background(app_handle: tauri::AppHandle) {
+    println!("Starting background queue processor...");
+    loop {
+        let mut item_to_process: Option<QueueItem> = None;
+        let mut should_sleep_long = true; // Sleep longer if no item found or error
+
+        {
+            // --- Start of DB Lock Scope 1 --- 
+            let app_state: State<'_, AppState> = app_handle.state();
+            let db_lock = app_state.db.lock().unwrap();
+
+            let is_already_processing = match (*db_lock).is_item_in_status(&["downloading", "uploading"]) {
+                Ok(processing) => processing,
+                Err(e) => {
+                    eprintln!("DB Error checking for active processing: {}", e);
+                    false 
+                }
+            };
+
+            if !is_already_processing {
+                match (*db_lock).get_next_queued_item() {
+                    Ok(Some(item)) => {
+                        item_to_process = Some(item);
+                        should_sleep_long = false; // Found item, process immediately
+                    },
+                    Ok(None) => { /* No items, sleep long */ },
+                    Err(e) => {
+                        eprintln!("DB Error fetching next queued item: {}", e);
+                         /* Error, sleep long */ 
+                    }
+                }
+            }
+            // --- db_lock is dropped here at the end of the scope ---
+        }
+
+        // --- Process Item (if found) outside the main DB lock scope ---
+        if let Some(next_item) = item_to_process {
+            let item_id = next_item.id.clone().unwrap_or_default();
+            let item_url = next_item.url.clone();
+            println!("Processing queue item: ID={}, URL={}", item_id, item_url);
+
+            let download_dir: String;
+            let mut proceed_with_download = true; // Assume true initially
+
+            {
+                 // --- Start of DB Lock Scope 2 (Settings & Mark Downloading) ---
+                let app_state: State<'_, AppState> = app_handle.state();
+                let db_lock = app_state.db.lock().unwrap();
+
+                let settings = match (*db_lock).get_settings() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Error getting settings for item {}: {}", item_id, e);
+                        let _ = (*db_lock).update_item_status(&item_id, "failed", Some(format!("Failed to get settings: {}", e)));
+                        AppSettings::default() // Return default to avoid breaking flow, but log error
+                    }
+                };
+
+                let download_dir_setting = settings.download_directory;
+                download_dir = match download_dir_setting {
+                    Some(dir) if !dir.is_empty() => dir,
+                    _ => {
+                         match dirs::download_dir() {
+                             Some(dir) => dir.to_string_lossy().to_string(),
+                             None => {
+                                 let err_msg = "Download directory not set and default couldn't be determined.".to_string();
+                                 eprintln!("Error for item {}: {}", item_id, err_msg);
+                                 let _ = (*db_lock).update_item_status(&item_id, "failed", Some(err_msg));
+                                 String::new() // Return empty string, check later
+                             }
+                         }
+                    }
+                };
+
+                if download_dir.is_empty() {
+                     proceed_with_download = false;
+                } else if let Err(e) = fs::create_dir_all(&download_dir) {
+                     let err_msg = format!("Failed to create download directory '{}': {}", download_dir, e);
+                     eprintln!("Error for item {}: {}", item_id, err_msg);
+                     let _ = (*db_lock).update_item_status(&item_id, "failed", Some(err_msg));
+                     proceed_with_download = false;
+                } else if let Err(e) = (*db_lock).update_item_status(&item_id, "downloading", Some("Download starting...".to_string())) {
+                     eprintln!("Error marking item {} as downloading: {}", item_id, e);
+                     proceed_with_download = false; // Failed to update status, don't proceed
+                } 
+                // --- db_lock is dropped here ---
+            }
+
+            // --- Execute Download (if safe to proceed) --- 
+            if proceed_with_download { // Check the flag
+                println!("Simulating download for item: {}...", item_id);
+                sleep(Duration::from_secs(15)).await; // Simulate download time
+
+                // --- After download simulation --- 
+                let download_success = true; // Placeholder
+                let final_status = if download_success { "completed" } else { "failed" };
+                let final_message = if download_success { Some("Download complete (simulated)".to_string()) } else { Some("Download failed (simulated)".to_string()) };
+
+                {
+                     // --- Start of DB Lock Scope 3 (Update Status & Check Auto-Upload) ---
+                    let app_state: State<'_, AppState> = app_handle.state();
+                    let db_lock_after = app_state.db.lock().unwrap();
+
+                    if let Err(e) = (*db_lock_after).update_item_status(&item_id, final_status, final_message) {
+                        eprintln!("Error updating item {} status after download simulation: {}", item_id, e);
+                    } else {
+                        println!("Item {} status updated to '{}' after download simulation.", item_id, final_status);
+                        
+                        let settings_after = match (*db_lock_after).get_settings() {
+                            Ok(s) => s,
+                            Err(_) => AppSettings::default()
+                        };
+
+                        if download_success && settings_after.auto_upload.unwrap_or_else(|| "false".to_string()) == "true" {
+                            println!("Auto-upload enabled, would trigger upload for {}", item_id);
+                            // TODO: Trigger upload logic here
+                        }
+                    }
+                    // --- db_lock_after is dropped here ---
+                }
+            } else {
+                println!("Skipping download for item {} due to previous error.", item_id);
+                // No need to sleep long here, the outer loop handles it
+            }
+            // --- End Download Execution --- 
+
+        } 
+        
+        // Sleep before next check
+        let sleep_duration = if should_sleep_long { Duration::from_secs(10) } else { Duration::from_millis(500) }; // Sleep less if we processed an item
+        sleep(sleep_duration).await;
+        
+    }
+}
+// --- End Background Queue Processing ---
+
+#[tokio::main]
+async fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             open_external_link,
@@ -598,15 +819,19 @@ fn main() {
             }
             let db = Database::new(&app.handle()).expect("Failed to initialize database");
             app.manage(AppState { db: Arc::new(Mutex::new(db)) });
-            
-            // --- Temporarily enable DevTools for release build debugging --- 
+
+            // --- Spawn the background queue processor ---
+            let app_handle_clone = app.handle().clone();
+            tokio::spawn(process_queue_background(app_handle_clone));
+
+            // --- Temporarily enable DevTools for release build debugging ---
             // #[cfg(debug_assertions)]
             {
                 let window = app.get_window("main").unwrap();
                 window.open_devtools();
                 window.close_devtools(); // Close initially, user can reopen with F12
             }
-            // --- End Temporary DevTools --- 
+            // --- End Temporary DevTools ---
             Ok(())
         })
         .run(tauri::generate_context!())

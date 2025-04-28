@@ -79,7 +79,8 @@ export async function updateItemStatus(id: string, status: string, message?: str
 
 export async function clearCompletedItems(statusTypes: string[]) {
   try {
-    await invoke('clear_completed_items', { status_types: statusTypes });
+    console.log('[Tauri API] Calling clear_completed_items with direct array:', JSON.stringify(statusTypes));
+    await invoke('clear_completed_items', { statusTypes });
   } catch (error) {
     console.error('Error clearing completed items via Tauri:', error);
     throw error;

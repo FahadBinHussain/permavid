@@ -22,7 +22,7 @@ uuid = { version = "1.6.1", features = ["v4", "serde"] }
 chrono = { version = "0.4.31", features = ["serde"] }
 dirs = "5.0.1"
 reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
 tokio-util = { version = "0.7", features = ["codec", "compat"] }
 futures-util = { version = "0.3", features = ["io"] }
 bytes = "1.0"

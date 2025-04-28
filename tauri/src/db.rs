@@ -1,4 +1,5 @@
 use rusqlite::{Connection, Result, params};
+use rusqlite::params_from_iter;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
@@ -38,7 +39,7 @@ pub struct QueueItem {
     pub local_path: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     pub filemoon_api_key: Option<String>,
     pub files_vc_api_key: Option<String>,
@@ -326,14 +327,9 @@ impl Database {
         let sql = format!("DELETE FROM queue WHERE status IN ({})", placeholders);
         
         let mut stmt = conn.prepare(&sql)?;
-        let mut param_idx = 1;
         
-        for status in status_types {
-            stmt.raw_bind_parameter(param_idx, status)?;
-            param_idx += 1;
-        }
-        
-        stmt.execute([])?;
+        // Pass parameters directly to execute using params_from_iter
+        stmt.execute(params_from_iter(status_types.iter()))?;
         Ok(())
     }
     
@@ -721,4 +717,62 @@ impl Database {
         Ok(())
     }
     // --- END ADDED --- 
+
+    // --- ADDED: Get the next item with 'queued' status --- 
+    pub fn get_next_queued_item(&self) -> Result<Option<QueueItem>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at, local_path 
+             FROM queue 
+             WHERE status = 'queued' 
+             ORDER BY added_at ASC 
+             LIMIT 1"
+        )?;
+        
+        let item_result = stmt.query_row([], |row| {
+            Ok(QueueItem {
+                id: row.get(0)?,
+                url: row.get(1)?,
+                status: row.get(2)?,
+                message: row.get(3)?,
+                title: row.get(4)?,
+                filemoon_url: row.get(5)?,
+                files_vc_url: row.get(6)?,
+                encoding_progress: row.get(7)?,
+                thumbnail_url: row.get(8)?,
+                added_at: row.get(9)?,
+                updated_at: row.get(10)?,
+                local_path: row.get(11)?,
+            })
+        });
+
+        match item_result {
+            Ok(item) => Ok(Some(item)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None), // Handle not found gracefully
+            Err(e) => Err(e), // Propagate other errors
+        }
+    }
+    // --- END ADDED ---
+
+    // --- ADDED: Check if any item has one of the specified statuses --- 
+    pub fn is_item_in_status(&self, statuses: &[&str]) -> Result<bool> {
+        if statuses.is_empty() {
+            return Ok(false);
+        }
+        let conn = self.conn.lock().unwrap();
+        let placeholders = vec!["?"; statuses.len()].join(",");
+        let sql = format!("SELECT 1 FROM queue WHERE status IN ({}) LIMIT 1", placeholders);
+        
+        let mut stmt = conn.prepare(&sql)?;
+        
+        // Use params_from_iter for the slice
+        let result = stmt.query_row(params_from_iter(statuses.iter()), |_row| Ok(true));
+
+        match result {
+            Ok(found) => Ok(found),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false), // No rows match
+            Err(e) => Err(e), // Propagate other errors
+        }
+    }
+    // --- END ADDED ---
 } 

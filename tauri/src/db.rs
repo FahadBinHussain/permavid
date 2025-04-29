@@ -665,7 +665,7 @@ impl Database {
     pub fn get_item_by_id(&self, id: &str) -> Result<Option<QueueItem>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at 
+            "SELECT id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at, local_path 
              FROM queue 
              WHERE id = ?"
         )?;
@@ -683,7 +683,7 @@ impl Database {
                 thumbnail_url: row.get(8)?,
                 added_at: row.get(9)?,
                 updated_at: row.get(10)?,
-                local_path: None,
+                local_path: row.get(11)?,
             })
         });
 

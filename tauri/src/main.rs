@@ -18,7 +18,6 @@ use tokio_util::codec::{BytesCodec, FramedRead};
 use futures_util::stream::TryStreamExt;
 use bytes::Bytes;
 use std::process::Stdio;
-use std::path::PathBuf;
 use tokio::process::Command;
 use tokio::io::{BufReader, AsyncBufReadExt};
 use regex::Regex;
@@ -58,21 +57,18 @@ struct Response<T> {
     data: Option<T>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct FilemoonUploadResponse {
     status: u16,
     msg: String,
-    result: Option<FilemoonUploadResult>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct FilemoonUploadResult {
     files: Option<Vec<FilemoonFile>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct FilemoonFile {
     filecode: String,
+    filename: Option<String>,
+    status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -514,8 +510,8 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                 let status = response.status();
                 match response.json::<FilemoonUploadResponse>().await {
                     Ok(resp_body) => {
-                        if status.is_success() && resp_body.status == 200 && resp_body.result.as_ref().and_then(|r| r.files.as_ref()).map_or(false, |f| !f.is_empty()) {
-                            let filecode = resp_body.result.unwrap().files.unwrap().remove(0).filecode;
+                        if status.is_success() && resp_body.status == 200 && resp_body.files.as_ref().map_or(false, |f| !f.is_empty()) {
+                            let filecode = resp_body.files.unwrap().remove(0).filecode;
                             println!("Filemoon upload successful! Filecode: {}", filecode);
                             // Re-acquire lock to update status
                             {
@@ -791,7 +787,6 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
 
                 match cmd.spawn() {
                     Ok(mut child) => {
-                        // TODO: Read stdout/stderr for progress/errors (in next step)
                         let stdout = child.stdout.take().expect("Failed to capture stdout");
                         let stderr = child.stderr.take().expect("Failed to capture stderr");
 
@@ -805,8 +800,9 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         // Spawn task to read stdout and parse progress
                         tokio::spawn(async move {
                             while let Ok(Some(line)) = stdout_reader.next_line().await {
-                                println!("[yt-dlp stdout] {}", line);
-                                // Try to parse progress percentage
+                                // println!("[yt-dlp stdout] {}", line); // Optional: keep for debugging
+
+                                // Check for progress
                                 if let Some(caps) = YTDLP_PROGRESS_REGEX.captures(&line) {
                                     if let Some(percent_match) = caps.get(1) {
                                         if let Ok(percent) = percent_match.as_str().parse::<f32>() {
@@ -815,12 +811,12 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                             {
                                                 let state: State<'_, AppState> = app_handle_clone_stdout.state();
                                                 let db_lock = state.db.lock().unwrap();
-                                                // Ignore result, best effort update
-                                                let _ = db_lock.update_item_status(&item_id_clone_stdout, "downloading", Some(progress_message)); 
+                                                let _ = db_lock.update_item_status(&item_id_clone_stdout, "downloading", Some(progress_message));
                                             }
                                         }
                                     }
                                 }
+                                // REMOVE: Logic to check for destination filename
                             }
                         });
 
@@ -840,9 +836,8 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                 if status.success() {
                                     println!("yt-dlp process finished successfully for item: {}", item_id);
                                     download_success = true;
-                                    final_status = "completed"; // Mark as completed for now
-                                    final_message = Some("Download finished, processing metadata...".to_string());
-                                    // TODO: Process info.json and thumbnail here
+                                    final_status = "completed";
+                                    final_message = Some("Download complete".to_string()); // Simpler message now
                                 } else {
                                     let err_msg = format!("yt-dlp exited with error code: {:?}", status.code());
                                     eprintln!("Error for item {}: {}", item_id, err_msg);
@@ -866,25 +861,125 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
 
                 // --- After download attempt ---
                 {
-                     // --- Start of DB Lock Scope 3 (Update Status & Check Auto-Upload) ---
-                    let app_state: State<'_, AppState> = app_handle.state();
-                    let db_lock_after = app_state.db.lock().unwrap();
+                     let app_state: State<'_, AppState> = app_handle.state();
+                     let db_lock_after = app_state.db.lock().unwrap();
 
-                    // --- Update using the new function (or fallback to status update) ---
-                    if download_success {
-                        // We still don't know the *exact* final filename without parsing JSON 
-                        // (due to potential sanitization by yt-dlp and unknown extension),
-                        // but we can store the *templated* path used for the download.
-                        // It might differ slightly from the actual file on disk if chars were sanitized.
-                        let final_templated_path = output_path_str.clone(); 
+                     if download_success {
+                        // --- Read info.json to get actual file details --- 
+                        let mut actual_video_path: Option<String> = None;
+                        let mut video_title: Option<String> = None;
+                        let mut thumbnail_url: Option<String> = None;
+                        let mut processed_json = false; // Flag to indicate if we successfully processed a JSON
 
+                        println!("Download successful for {}. Searching for .info.json in dir: {}", item_id, download_dir);
+
+                        // Search for *any* .info.json file and try to process it
+                        if let Ok(entries) = fs::read_dir(&download_dir) {
+                            for entry in entries.filter_map(Result::ok) {
+                                let path = entry.path();
+                                // Check if it's a .info.json file
+                                if path.is_file() && path.extension().map_or(false, |ext| ext == "json") && path.file_stem().map_or(false, |stem| stem.to_string_lossy().ends_with(".info")) {
+                                    let json_path_str = path.to_string_lossy().to_string();
+                                    println!("Found potential info.json: {}", json_path_str);
+                                    
+                                    // Read and parse the JSON
+                                    if let Ok(json_content) = fs::read_to_string(&path) {
+                                        if let Ok(info) = serde_json::from_str::<JsonValue>(&json_content) {
+                                            println!("Successfully parsed info.json: {}", json_path_str);
+                                            processed_json = true; // Mark that we parsed a JSON
+
+                                            // Extract common details
+                                            video_title = info.get("title").and_then(|v| v.as_str()).map(String::from);
+                                            thumbnail_url = info.get("thumbnail").and_then(|v| v.as_str()).map(String::from);
+                                            let ext = info.get("ext").and_then(|v| v.as_str());
+
+                                            // *** Determine the actual video file path (Priority: _filename) ***
+                                            
+                                            // 1. Check '_filename' (often relative path used by yt-dlp)
+                                            if let Some(relative_filename) = info.get("_filename").and_then(|v| v.as_str()) {
+                                                 let potential_path = Path::new(&download_dir).join(relative_filename);
+                                                 if potential_path.exists() {
+                                                    actual_video_path = Some(potential_path.to_string_lossy().to_string());
+                                                     println!("Found video path from '_filename' in info.json: {:?}", actual_video_path);
+                                                 } else {
+                                                     println!("Path from '_filename' ('{}') does not exist.", potential_path.display());
+                                                 }
+                                            }
+
+                                            // *** 2. Construct path from template and JSON data (Fallback) ***
+                                            if actual_video_path.is_none() {
+                                                println!("'_filename' field not found or invalid in info.json. Attempting construction...");
+                                                if let (Some(title), Some(extension)) = (video_title.as_deref(), ext) {
+                                                    let channel = info.get("channel").and_then(|v| v.as_str()).unwrap_or("UnknownChannel");
+                                                    let base_filename_template = "%(title)s by %(channel)s.%(ext)s"; // Our original template
+                                                    
+                                                    // Sanitize parts from JSON before substituting
+                                                    let sanitized_title = sanitize_filename(title);
+                                                    let sanitized_channel = sanitize_filename(channel);
+                                                    
+                                                    let constructed_filename = base_filename_template
+                                                        .replace("%(title)s", &sanitized_title)
+                                                        .replace("%(channel)s", &sanitized_channel)
+                                                        .replace("%(ext)s", extension);
+                                                    
+                                                    let constructed_path = Path::new(&download_dir).join(&constructed_filename);
+                                                    println!("Attempting constructed path: {}", constructed_path.display());
+
+                                                    if constructed_path.exists() {
+                                                        actual_video_path = Some(constructed_path.to_string_lossy().to_string());
+                                                        println!("Successfully used constructed video path: {:?}", actual_video_path);
+                                                    } else {
+                                                        println!("Warning: Constructed video path does not exist: {}", constructed_path.display());
+                                                        // Last resort: Try replacing extension on the info.json path itself
+                                                        let video_path_from_json = json_path_str.replace(".info.json", &format!(".{}", extension));
+                                                         if Path::new(&video_path_from_json).exists() {
+                                                            actual_video_path = Some(video_path_from_json);
+                                                            println!("Used video path derived directly from info.json path: {:?}", actual_video_path);
+                                                         } else {
+                                                             println!("Warning: Video path derived from info.json path also doesn't exist: {}", video_path_from_json);
+                                                         }
+                                                    }
+                                                } else {
+                                                    println!("Warning: Could not extract title or extension from info.json to construct path.");
+                                                }
+                                            }
+                                            
+                                            // Clean up the info.json file? Maybe not automatically.
+                                            // let _ = fs::remove_file(&path); 
+
+                                            break; // Found and processed a json, stop searching
+
+                                        } else {
+                                            eprintln!("Error parsing JSON content from {}", json_path_str);
+                                        }
+                                    } else {
+                                        eprintln!("Error reading file content from {}", json_path_str);
+                                    }
+                                }
+                            }
+                        }
+
+                        if !processed_json {
+                             println!("Warning: Could not find or process any .info.json file for item {}. Cannot determine exact filename.", item_id);
+                        }
+                        
+                        // --- Update Database with determined info --- 
+                        if actual_video_path.is_none() {
+                             println!("CRITICAL WARNING: Final video path could not be determined for item {}. Upload WILL likely fail. Storing template path as fallback.", item_id);
+                             // Fallback: Store the template path, acknowledging it's likely wrong for uploads
+                             actual_video_path = Some(output_path_str.clone()); // This is the source of the error if hit
+                        }
+
+                        println!("Updating DB for item {}: status='completed', title='{:?}', path='{:?}', thumb='{:?}'", 
+                            item_id, video_title, actual_video_path, thumbnail_url);
+                        
                         if let Err(e) = (*db_lock_after).update_item_after_download(
                             &item_id,
-                            "completed", // New status
-                            None,       // No title from JSON yet
-                            Some(final_templated_path), // Store templated path
-                            None,       // No thumbnail URL from JSON yet
-                            Some("Download complete".to_string()) // Simple success message
+                            "completed", 
+                            video_title,
+                            actual_video_path,
+                            thumbnail_url,
+                            Some("Download complete".to_string())
                         ) {
                             eprintln!("Error updating item {} details after download: {}", item_id, e);
                         } else {
@@ -917,7 +1012,6 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                             }
                         });
                     }
-                    // --- db_lock_after is dropped here ---
                 }
             } else {
                 println!("Skipping download for item {} due to previous error.", item_id);

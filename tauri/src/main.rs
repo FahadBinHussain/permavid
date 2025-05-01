@@ -31,13 +31,17 @@ lazy_static! {
 
 // Helper function to sanitize filenames
 fn sanitize_filename(name: &str) -> String {
-    // Basic sanitization: replace invalid chars with underscores
-    // This might need to be more robust depending on expected titles
+    // More robust sanitization: replace common problematic chars and any non-alphanumeric (excluding ., -, _)
     name.chars().map(|c| {
         match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            _ if c.is_control() => '_',
-            _ => c,
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | // Standard problematic chars
+            '？' | '｜' | // Specific chars from the example
+            '#' | '%' | '&' | '{' | '}' | '$' | '!' | '@' | '+' | '`' | '=' // Other potentially problematic chars
+             => '_', 
+            _ if c.is_control() => '_', // Control characters
+            // Allow letters, numbers, period, hyphen, underscore. Replace others.
+            _ if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' => c, 
+            _ => '_' // Replace any other character not explicitly allowed
         }
     }).collect::<String>()
     // Trim leading/trailing whitespace/dots/underscores and limit length
@@ -557,12 +561,30 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         };
         let stream = FramedRead::new(file, BytesCodec::new());
         let file_body = reqwest::Body::wrap_stream(stream.map_ok(Bytes::from));
-        let form = multipart::Form::new()
-            .text("key", api_key) // Still need API key for the POST
-            .part("file", multipart::Part::stream(file_body).file_name(filename.clone()));
-            
+        
+        // Sanitize the filename before sending it to Filemoon
+        let sanitized_filename = sanitize_filename(&filename);
+        println!("Sanitized filename for upload: {}", sanitized_filename);
+        
+        // Go back to multipart but try a different approach
+        // Read file into memory to avoid streaming issues
+        let file_bytes = fs::read(&local_path).map_err(|e| format!("Failed to read file: {}", e))?;
+        
+        // Create the multipart form exactly per API docs
+        let form = reqwest::multipart::Form::new()
+            .text("key", api_key.clone())
+            .part("file", reqwest::multipart::Part::bytes(file_bytes)
+                .file_name(sanitized_filename.clone()));
+                
+        // Log the upload details for debugging
+        println!("Uploading to Filemoon URL: {}", upload_server_url);
+        println!("Using multipart with in-memory file data");
+        
         // POST to the URL obtained in Step 1
-        match client.post(&upload_server_url).multipart(form).send().await {
+        match client.post(&upload_server_url)
+            .multipart(form)
+            .send()
+            .await {
             Ok(response) => {
                 let upload_status = response.status();
                 // Read the response body as text first for debugging
@@ -662,9 +684,14 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         };
         let stream = FramedRead::new(file, BytesCodec::new());
         let file_body = reqwest::Body::wrap_stream(stream.map_ok(Bytes::from));
+        
+        // Sanitize the filename before sending it to Files.vc (similar to Filemoon)
+        let sanitized_filename = sanitize_filename(&filename);
+        println!("Sanitized filename for Files.vc upload: {}", sanitized_filename);
+        
         let form = multipart::Form::new()
             .text("key", api_key)
-            .part("file", multipart::Part::stream(file_body).file_name(filename));
+            .part("file", multipart::Part::stream(file_body).file_name(sanitized_filename.clone()));
             
         match client.post("https://api.files.vc/upload").multipart(form).send().await {
              Ok(response) => {

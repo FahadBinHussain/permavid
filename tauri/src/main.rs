@@ -58,6 +58,18 @@ struct Response<T> {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+struct FilemoonUploadResult {
+    files: Option<Vec<FilemoonFile>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FilemoonGetUploadServerResponse {
+    status: u16,
+    msg: String,
+    result: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 struct FilemoonUploadResponse {
     status: u16,
     msg: String,
@@ -477,7 +489,6 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         let api_key = match settings_clone.filemoon_api_key.clone() {
             Some(key) if !key.is_empty() => key,
             _ => {
-                 // Re-acquire lock to update status
                  {
                      let db_err = app_state.db.lock().unwrap();
                      let _ = db_err.update_item_status(&item_id_clone, "failed", Some("Filemoon API key not configured".to_string()));
@@ -486,12 +497,57 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
             }
         };
         println!("Attempting to upload {} to Filemoon...", filename);
+
+        // --- Step 1: Get Upload Server URL --- 
+        let upload_server_url: String;
+        match client.get("https://api.filemoon.sx/api/upload/server")
+            .query(&[("key", &api_key)])
+            .send()
+            .await {
+            Ok(response) => {
+                let get_server_status = response.status();
+                match response.json::<FilemoonGetUploadServerResponse>().await {
+                    Ok(resp_body) => {
+                        if get_server_status.is_success() && resp_body.status == 200 && !resp_body.result.is_empty() {
+                            upload_server_url = resp_body.result;
+                            println!("Got Filemoon upload server: {}", upload_server_url);
+                        } else {
+                            let err_msg = format!("Filemoon GetServer API Error (Status {}): {}", resp_body.status, resp_body.msg);
+                            println!("{}", err_msg);
+                             {
+                                 let db_lock = app_state.db.lock().unwrap();
+                                 let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                            }
+                            return Err(err_msg); // Stop here if we can't get upload server
+                        }
+                    }
+                    Err(e) => {
+                        let err_msg = format!("Failed to parse Filemoon GetServer response: {}", e);
+                        println!("{}", err_msg);
+                         {
+                            let db_lock = app_state.db.lock().unwrap();
+                            let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                         }
+                        return Err(err_msg);
+                    }
+                }
+            }
+            Err(e) => {
+                let err_msg = format!("Filemoon GetServer request failed: {}", e);
+                println!("{}", err_msg);
+                 {
+                    let db_lock = app_state.db.lock().unwrap();
+                    let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                 }
+                return Err(err_msg);
+            }
+        }
+        // --- End Step 1 ---
         
-        // File open needs to be async
+        // --- Step 2: Upload to the Obtained Server URL --- 
         let file = match File::open(&local_path).await {
             Ok(f) => f,
             Err(e) => {
-                // Re-acquire lock to update status
                  {
                      let db_err = app_state.db.lock().unwrap();
                      let _ = db_err.update_item_status(&item_id_clone, "failed", Some(format!("Failed to open file: {}", e)));
@@ -502,58 +558,78 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         let stream = FramedRead::new(file, BytesCodec::new());
         let file_body = reqwest::Body::wrap_stream(stream.map_ok(Bytes::from));
         let form = multipart::Form::new()
-            .text("key", api_key)
+            .text("key", api_key) // Still need API key for the POST
             .part("file", multipart::Part::stream(file_body).file_name(filename.clone()));
             
-        match client.post("https://api.filemoon.sx/api/upload/server").multipart(form).send().await {
+        // POST to the URL obtained in Step 1
+        match client.post(&upload_server_url).multipart(form).send().await {
             Ok(response) => {
-                let status = response.status();
-                match response.json::<FilemoonUploadResponse>().await {
-                    Ok(resp_body) => {
-                        if status.is_success() && resp_body.status == 200 && resp_body.files.as_ref().map_or(false, |f| !f.is_empty()) {
-                            let filecode = resp_body.files.unwrap().remove(0).filecode;
-                            println!("Filemoon upload successful! Filecode: {}", filecode);
-                            // Re-acquire lock to update status
-                            {
-                                let db_lock = app_state.db.lock().unwrap();
-                                let _ = db_lock.update_item_status(&item_id_clone, "uploaded", Some(format!("Filemoon: {}", filecode)));
-                                let mut updated_item = db_lock.get_item_by_id(&item_id_clone).map_err(|e| format!("DB Error: {}", e))?.unwrap();
-                                updated_item.filemoon_url = Some(filecode.clone());
-                                if let Err(e) = db_lock.update_queue_item(&updated_item) { eprintln!("Failed to update Filemoon URL in DB: {}", e); }
+                let upload_status = response.status();
+                // Read the response body as text first for debugging
+                match response.text().await {
+                    Ok(raw_text) => {
+                        println!("Filemoon Upload Raw Response Status: {}", upload_status);
+                        println!("Filemoon Upload Raw Response Body: {}", raw_text);
+
+                        // Now attempt to parse the raw text as JSON
+                        match serde_json::from_str::<FilemoonUploadResponse>(&raw_text) {
+                            Ok(resp_body) => {
+                                // Check using the parsed JSON
+                                if upload_status.is_success() && resp_body.status == 200 && resp_body.files.as_ref().map_or(false, |f| !f.is_empty()) {
+                                    let filecode = resp_body.files.unwrap().remove(0).filecode;
+                                    println!("Filemoon upload successful! Filecode: {}", filecode);
+                                    {
+                                        let db_lock = app_state.db.lock().unwrap();
+                                        let _ = db_lock.update_item_status(&item_id_clone, "uploaded", Some(format!("Filemoon: {}", filecode)));
+                                        let mut updated_item = db_lock.get_item_by_id(&item_id_clone).map_err(|e| format!("DB Error: {}", e))?.unwrap();
+                                        updated_item.filemoon_url = Some(filecode.clone());
+                                        if let Err(e) = db_lock.update_queue_item(&updated_item) { eprintln!("Failed to update Filemoon URL in DB: {}", e); }
+                                    }
+                                    final_message = format!("Upload to Filemoon successful (Filecode: {}).", filecode);
+                                    success = true;
+                                } else {
+                                    let err_msg = format!("Filemoon Upload API Error (Status {}): {} - Parsed from JSON: {:?}", 
+                                                        resp_body.status, resp_body.msg, resp_body);
+                                    println!("{}", err_msg);
+                                    {
+                                        let db_lock = app_state.db.lock().unwrap();
+                                        let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                                    }
+                                    final_message = err_msg;
+                                }
                             }
-                            final_message = format!("Upload to Filemoon successful (Filecode: {}).", filecode);
-                            success = true;
-                        } else {
-                            let err_msg = format!("Filemoon API Error (Status {}): {}", resp_body.status, resp_body.msg);
-                            println!("{}", err_msg);
-                             // Re-acquire lock to update status
-                            {
-                                 let db_lock = app_state.db.lock().unwrap();
-                                 let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                            Err(e) => {
+                                // JSON parsing failed, use the raw text in the error message
+                                let err_msg = format!("Failed to parse Filemoon Upload JSON response (Status {}): {}. Raw Body: {}", 
+                                                    upload_status, e, raw_text);
+                                println!("{}", err_msg);
+                                {
+                                    let db_lock = app_state.db.lock().unwrap();
+                                    let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                                }
+                                final_message = err_msg;
                             }
-                             final_message = err_msg;
                         }
                     }
                     Err(e) => {
-                        let err_msg = format!("Failed to parse Filemoon response: {}", e);
+                        // Failed to even read the response body as text
+                        let err_msg = format!("Failed to read Filemoon Upload response body (Status {}): {}", upload_status, e);
                         println!("{}", err_msg);
-                         // Re-acquire lock to update status
-                         {
+                        {
                             let db_lock = app_state.db.lock().unwrap();
                             let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
-                         }
+                        }
                         final_message = err_msg;
                     }
                 }
             }
             Err(e) => {
-                let err_msg = format!("Filemoon request failed: {}", e);
+                let err_msg = format!("Filemoon Upload request failed: {}", e);
                 println!("{}", err_msg);
-                 // Re-acquire lock to update status
-                 {
+                {
                     let db_lock = app_state.db.lock().unwrap();
                     let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
-                 }
+                }
                 final_message = err_msg;
             }
         }
@@ -564,10 +640,9 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         let api_key = match settings_clone.files_vc_api_key.clone() {
             Some(key) if !key.is_empty() => key,
             _ => {
-                 // Re-acquire lock to update status
                  {
-                     let db_lock = app_state.db.lock().unwrap();
-                     let _ = db_lock.update_item_status(&item_id_clone, "failed", Some("Files.vc API key not configured".to_string()));
+                     let db_err = app_state.db.lock().unwrap();
+                     let _ = db_err.update_item_status(&item_id_clone, "failed", Some("Files.vc API key not configured".to_string()));
                  }
                 return Err("Files.vc API key not configured".to_string());
             }
@@ -578,10 +653,9 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         let file = match File::open(&local_path).await {
             Ok(f) => f,
             Err(e) => {
-                 // Re-acquire lock to update status
                  {
-                     let db_lock = app_state.db.lock().unwrap();
-                     let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(format!("Failed to open file: {}", e)));
+                     let db_err = app_state.db.lock().unwrap();
+                     let _ = db_err.update_item_status(&item_id_clone, "failed", Some(format!("Failed to open file: {}", e)));
                  }
                  return Err(format!("Failed to open file: {}", e));
             }
@@ -601,7 +675,6 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                             let result_data = resp_body.result.unwrap();
                             let file_url = result_data.url;
                             println!("Files.vc upload successful! URL: {}", file_url);
-                             // Re-acquire lock to update status
                              {
                                  let db_lock = app_state.db.lock().unwrap();
                                  let _ = db_lock.update_item_status(&item_id_clone, "uploaded", Some(format!("Files.vc: {}", file_url)));
@@ -614,8 +687,7 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                          } else {
                              let err_msg = format!("Files.vc API Error (Status {}): {}", resp_body.status, resp_body.msg);
                              println!("{}", err_msg);
-                              // Re-acquire lock to update status
-                             {
+                              {
                                  let db_lock = app_state.db.lock().unwrap();
                                  let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
                              }
@@ -625,7 +697,6 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                     Err(e) => {
                         let err_msg = format!("Failed to parse Files.vc response: {}", e);
                         println!("{}", err_msg);
-                         // Re-acquire lock to update status
                          {
                              let db_lock = app_state.db.lock().unwrap();
                              let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
@@ -637,8 +708,7 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
             Err(e) => {
                  let err_msg = format!("Files.vc request failed: {}", e);
                  println!("{}", err_msg);
-                  // Re-acquire lock to update status
-                 {
+                  {
                      let db_lock = app_state.db.lock().unwrap();
                      let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
                  }
@@ -781,8 +851,6 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                 cmd.stderr(Stdio::piped()); // Capture standard error
                 
                 // --- Run yt-dlp Process ---
-                let mut final_status = "failed"; // Assume failure initially
-                let mut final_message = Some("Download failed (Unknown error)".to_string());
                 let mut download_success = false;
 
                 match cmd.spawn() {
@@ -836,25 +904,38 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                 if status.success() {
                                     println!("yt-dlp process finished successfully for item: {}", item_id);
                                     download_success = true;
-                                    final_status = "completed";
-                                    final_message = Some("Download complete".to_string()); // Simpler message now
                                 } else {
                                     let err_msg = format!("yt-dlp exited with error code: {:?}", status.code());
                                     eprintln!("Error for item {}: {}", item_id, err_msg);
-                                    final_message = Some(err_msg);
+                                    // Update DB status directly
+                                    {
+                                        let state_err: State<'_, AppState> = app_handle.state();
+                                        let db_lock_err = state_err.db.lock().unwrap();
+                                        let _ = db_lock_err.update_item_status(&item_id, "failed", Some(err_msg));
+                                    }
                                 }
                             }
                             Err(e) => {
                                 let err_msg = format!("Failed to wait for yt-dlp process: {}", e);
                                 eprintln!("Error for item {}: {}", item_id, err_msg);
-                                final_message = Some(err_msg);
+                                // Update DB status directly
+                                {
+                                    let state_err: State<'_, AppState> = app_handle.state();
+                                    let db_lock_err = state_err.db.lock().unwrap();
+                                    let _ = db_lock_err.update_item_status(&item_id, "failed", Some(err_msg));
+                                }
                             }
                         }
                     }
                     Err(e) => {
                          let err_msg = format!("Failed to spawn yt-dlp command: {}. Is yt-dlp installed and in PATH?", e);
                          eprintln!("Error for item {}: {}", item_id, err_msg);
-                         final_message = Some(err_msg);
+                         // Update DB status directly
+                         {
+                             let state_err: State<'_, AppState> = app_handle.state();
+                             let db_lock_err = state_err.db.lock().unwrap();
+                             let _ = db_lock_err.update_item_status(&item_id, "failed", Some(err_msg));
+                         }
                     }
                 }
                 // --- END yt-dlp Process ---
@@ -986,12 +1067,13 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                             println!("Item {} details updated after successful download.", item_id);
                         }
                     } else {
-                        // Update status to failed on error
-                        if let Err(e) = (*db_lock_after).update_item_status(&item_id, "failed", final_message.clone()) {
-                           eprintln!("Error updating item {} status to failed: {}", item_id, e);
-                        } else {
-                           println!("Item {} status updated to 'failed'.", item_id);
-                        }
+                        // Update status to failed on error (already done within error handling above)
+                        // No need to update status again here unless a new error occurred
+                        // if let Err(e) = (*db_lock_after).update_item_status(&item_id, "failed", final_message.clone()) { 
+                        //    eprintln!("Error updating item {} status to failed: {}", item_id, e);
+                        // } else {
+                        //    println!("Item {} status updated to 'failed'.", item_id);
+                        // }
                     }
 
                     // Check for auto-upload (keep this logic)

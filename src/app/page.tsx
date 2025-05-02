@@ -352,13 +352,27 @@ export default function Home() {
       setMessage(`URL added to queue (ID: ${newItemId})`);
       setUrl('');
     } catch (submitError: any) {
-      console.error('Submission error via Tauri:', submitError);
-      const errorMessage = submitError.message || 'Failed to add URL';
-      if (errorMessage.includes('UNIQUE constraint failed: queue.url')) {
-          setError('This URL already exists in the queue.');
+      // Convert the caught error to a string for checking
+      const errorString = String(submitError);
+      let finalErrorMessage = 'Failed to add URL. Please check the URL or try again.'; // Default generic message
+
+      // Check the error string for our specific duplicate URL message from Rust
+      if (errorString.includes("already exists in the queue")) {
+        finalErrorMessage = errorString; // Use the specific message
+        // Don't log this expected error to the console
       } else {
-          setError(`Failed to add URL: ${errorMessage}`);
+        // Log unexpected errors to the console for debugging
+        console.error('Unexpected submission error object via Tauri:', submitError);
+        // Determine the best message for unexpected errors
+        if (submitError?.message && submitError.message.toLowerCase() !== 'failed to add url') {
+          finalErrorMessage = submitError.message;
+        } else if (!errorString.toLowerCase().includes('failed to add url')) {
+          finalErrorMessage = errorString;
+        }
+        // If it's an unexpected error but the message is still generic, keep the improved default.
       }
+      
+      setError(finalErrorMessage);
     } finally {
       setIsLoading(false);
     }

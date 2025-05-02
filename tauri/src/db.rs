@@ -178,6 +178,28 @@ impl Database {
         let id = item.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
         let now = Utc::now().timestamp_millis();
         
+        // --- ADDED: Check if URL already exists ---
+        let check_query = "SELECT 1 FROM queue WHERE url = ? LIMIT 1";
+        let url_exists: Result<i32, rusqlite::Error> = conn.query_row(check_query, params![&item.url], |row| row.get(0));
+
+        match url_exists {
+            Ok(_) => {
+                // URL exists, return an error similar to a unique constraint violation
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE), // Use SQLITE_CONSTRAINT_UNIQUE code
+                    Some(format!("URL '{}' already exists in the queue.", item.url)),
+                ));
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                // URL doesn't exist, proceed with insertion
+            }
+            Err(e) => {
+                // Other database error during check
+                return Err(e);
+            }
+        }
+        // --- END ADDED ---
+
         conn.execute(
             "INSERT INTO queue (id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

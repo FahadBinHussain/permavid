@@ -48,14 +48,20 @@ export async function getQueueItems() {
 
 export async function addQueueItem(item: QueueItem) {
   try {
-    const response = await invoke('add_queue_item', { item });
-    if (typeof response === 'object' && response !== null && 'data' in response) {
-      return (response as any).data || "";
+    const id: string = await invoke('add_queue_item', { item });
+    return id;
+  } catch (err: any) {
+    // Convert error to string for checking
+    const errorString = String(err);
+    // Check if it's the expected duplicate error
+    if (errorString.includes("already exists in the queue")) {
+      // Re-throw only the message string for graceful handling in UI
+      throw errorString; 
+    } else {
+      // Re-throw other unexpected errors
+      console.error("Error adding queue item via Tauri:", err); // Log unexpected errors here
+      throw err; 
     }
-    return "";
-  } catch (error) {
-    console.error('Error adding queue item via Tauri:', error);
-    throw error;
   }
 }
 

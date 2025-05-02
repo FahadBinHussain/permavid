@@ -624,8 +624,8 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                 // Read the response body as text first for debugging
                 match response.text().await {
                     Ok(raw_text) => {
-                        println!("Filemoon Upload Raw Response Status: {}", upload_status);
-                        println!("Filemoon Upload Raw Response Body: {}", raw_text);
+                        // println!("Filemoon Upload Raw Response Status: {}", upload_status); // Debug
+                        // println!("Filemoon Upload Raw Response Body: {}", raw_text); // Debug
 
                         // Now attempt to parse the raw text as JSON
                         match serde_json::from_str::<FilemoonUploadResponse>(&raw_text) {
@@ -808,8 +808,8 @@ async fn check_filemoon_status(item_id: &str, filecode: &str, api_key: &str, app
             let status = response.status();
             match response.text().await { // Read as text first
                 Ok(raw_text) => {
-                    println!("Item {} Filemoon Status Raw Response Status: {}", item_id, status);
-                    println!("Item {} Filemoon Status Raw Response Body: {}", item_id, raw_text);
+                    // println!("Item {} Filemoon Status Raw Response Status: {}", item_id, status); // Debug
+                    // println!("Item {} Filemoon Status Raw Response Body: {}", item_id, raw_text); // Debug
 
                     // Now attempt to parse the raw text as JSON
                     match serde_json::from_str::<FilemoonEncodingStatusResponse>(&raw_text) {
@@ -891,6 +891,9 @@ async fn check_filemoon_file_info(item_id: &str, filecode: &str, api_key: &str, 
             // Read body text first for better error reporting
             match response.text().await {
                 Ok(raw_text) => {
+                    // println!("Item {} Filemoon Status Raw Response Status: {}", item_id, status); // Debug
+                    // println!("Item {} Filemoon Status Raw Response Body: {}", item_id, raw_text); // Debug
+
                     match serde_json::from_str::<FilemoonFileInfoResponse>(&raw_text) {
                         Ok(resp_body) => {
                             if status.is_success() && resp_body.status == 200 {

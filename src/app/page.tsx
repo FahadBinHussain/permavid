@@ -14,68 +14,54 @@ import {
   TrashIcon, // For clear
   LinkIcon, // For links
   ComputerDesktopIcon, // For encoding
-  WifiIcon // For transferring
-} from '@heroicons/react/24/solid';
+  WifiIcon, // For transferring
+  ChevronDownIcon, // For dropdowns
+  PlusIcon, // For add button
+  QueueListIcon, // Generic queued
+  ArrowDownCircleIcon, // Downloading
+  CheckBadgeIcon, // Completed/Encoded
+  ArrowUpCircleIcon, // Uploading/Transferring
+  CpuChipIcon, // Encoding
+  ExclamationCircleIcon, // Failed
+  NoSymbolIcon, // Cancelled
+  Bars3Icon, // All filter
+  AdjustmentsHorizontalIcon, // Filter button icon
+  ArrowsUpDownIcon, // Sort button icon
+  SparklesIcon, // Gallery icon
+} from '@heroicons/react/24/solid'; 
 import { invoke } from '@tauri-apps/api/tauri'; // Import invoke
 import { open } from '@tauri-apps/api/shell'; // Import open for external links
 import { useTauri } from '@/app/tauri-integration'; // Corrected import path
 import { QueueItem, AppSettings } from '@/lib/tauri-api'; // <-- Import types
 import { createEmptySettings } from '@/lib/settings-helper'; // Import factory function
 
-// --- Add SVG Icons ---
+// --- Updated Icons with consistent size ---
+const iconClass = "h-4 w-4 inline-block mr-1.5 align-text-bottom"; // Consistent icon styling
 const icons: { [key: string]: React.JSX.Element } = {
-  queued: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-    </svg>
-  ),
-  downloading: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-    </svg>
-  ),
-  completed: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" viewBox="0 0 20 20" fill="currentColor">
-      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-    </svg>
-  ),
-  uploading: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-    </svg>
-  ),
-  transferring: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-       <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /> // Reuse upload icon
-    </svg>
-  ),
-  encoding: (
-     <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-     </svg>
-  ),
-  encoded: (
-     <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" viewBox="0 0 20 20" fill="currentColor">
-       <path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" />
-       <path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" /> // Film/Video icon
-     </svg>
-  ),
-  failed: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" viewBox="0 0 20 20" fill="currentColor">
-      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-10.707a1 1 0 00-1.414-1.414L10 8.586 7.707 6.293a1 1 0 00-1.414 1.414L8.586 10l-2.293 2.293a1 1 0 101.414 1.414L10 11.414l2.293 2.293a1 1 0 001.414-1.414L11.414 10l2.293-2.293z" clipRule="evenodd" />
-    </svg>
-  ),
-  cancelled: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-    </svg>
-  ),
-  all: (
-    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1 inline-block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-       <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-    </svg>
-  ),
+  queued: <QueueListIcon className={iconClass + " text-gray-500"} />,
+  downloading: <ArrowDownCircleIcon className={iconClass + " text-blue-500 animate-pulse"} />,
+  completed: <CheckBadgeIcon className={iconClass + " text-green-500"} />,
+  uploading: <ArrowUpCircleIcon className={iconClass + " text-purple-500 animate-pulse"} />,
+  transferring: <WifiIcon className={iconClass + " text-sky-500 animate-pulse"} />, // Changed icon
+  encoding: <CpuChipIcon className={iconClass + " text-cyan-500 animate-spin"} />, // Changed icon
+  encoded: <CheckBadgeIcon className={iconClass + " text-indigo-500"} />, // Use CheckBadgeIcon for consistency
+  failed: <ExclamationCircleIcon className={iconClass + " text-red-500"} />,
+  cancelled: <NoSymbolIcon className={iconClass + " text-gray-400"} />,
+  all: <Bars3Icon className={iconClass + " text-gray-500"} />,
+};
+
+// --- Color mapping for badges/progress ---
+const statusColors: { [key: string]: { bg: string; text: string; progress: string } } = {
+  queued: { bg: 'bg-gray-100', text: 'text-gray-700', progress: 'bg-gray-400' },
+  downloading: { bg: 'bg-blue-100', text: 'text-blue-700', progress: 'bg-blue-500' },
+  completed: { bg: 'bg-green-100', text: 'text-green-700', progress: 'bg-green-500' },
+  uploading: { bg: 'bg-purple-100', text: 'text-purple-700', progress: 'bg-purple-500' },
+  transferring: { bg: 'bg-sky-100', text: 'text-sky-700', progress: 'bg-sky-500' },
+  encoding: { bg: 'bg-cyan-100', text: 'text-cyan-700', progress: 'bg-cyan-500' },
+  encoded: { bg: 'bg-indigo-100', text: 'text-indigo-700', progress: 'bg-indigo-500' },
+  failed: { bg: 'bg-red-100', text: 'text-red-700', progress: 'bg-red-500' },
+  cancelled: { bg: 'bg-gray-100', text: 'text-gray-500', progress: 'bg-gray-400' },
+  default: { bg: 'bg-gray-100', text: 'text-gray-700', progress: 'bg-gray-400' },
 };
 
 // --- Add TypeScript definition for the exposed Electron API --- 
@@ -121,127 +107,174 @@ const QueueListItem: React.FC<QueueItemProps> = ({
       console.error('Attempted action on item without ID:', item);
     }
   };
+
+  const colors = statusColors[item.status] || statusColors.default;
+
+  // Function to render action buttons - improved styling
+  const renderButton = (
+    label: string, 
+    action: () => void, 
+    bgColor: string, 
+    hoverColor: string, 
+    disabled: boolean, 
+    loadingLabel: string, 
+    icon?: React.ReactNode
+  ) => (
+    <button 
+      onClick={action}
+      disabled={disabled}
+      className={`px-2.5 py-1 text-xs font-medium rounded-md text-white ${bgColor} ${hoverColor} disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-150 flex items-center space-x-1`}
+    >
+      {icon}
+      <span>{disabled ? loadingLabel : label}</span>
+    </button> 
+  );
   
   return (
-    <li key={item.id ?? item.url} className="px-4 py-5 sm:px-6">
+    <li key={item.id ?? item.url} className="px-4 py-4 sm:px-6 hover:bg-gray-50 transition-colors duration-150">
       <div className="flex items-start space-x-4">
-          {item.thumbnail_url && (
+          {item.thumbnail_url ? (
             <div className="flex-shrink-0">
               <img 
-                className="h-12 w-20 rounded object-cover"
+                className="h-16 w-28 rounded-md object-cover border border-gray-200" // Slightly larger, rounded, border
                 src={item.thumbnail_url} 
                 alt="Video thumbnail"
-                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                onError={(e) => { 
+                  e.currentTarget.style.display = 'none'; 
+                  // Optionally show a placeholder:
+                  // e.currentTarget.parentElement?.insertAdjacentHTML('beforeend', '<div class="h-16 w-28 rounded-md bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-400 text-xs">No thumb</div>'); 
+                }}
               />
+            </div>
+          ) : (
+            // Placeholder if no thumbnail
+            <div className="flex-shrink-0 h-16 w-28 rounded-md bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-400 text-xs">
+              No thumb
             </div>
           )}
 
           <div className="flex-1 min-w-0"> 
-              <div className="flex items-center justify-between space-x-2 mb-1">
-                <div className="text-base font-semibold text-indigo-700 truncate flex-1 min-w-0" title={item.title || item.url}>
+              {/* Top row: Title and Status Badge */}
+              <div className="flex items-center justify-between space-x-3 mb-1">
+                <p className="text-sm font-semibold text-gray-900 truncate flex-1 min-w-0" title={item.title || item.url}>
                   {item.title || item.url}
-                </div>
-                <div className="ml-2 flex-shrink-0 flex">
-                  <p className={`px-2 py-0.5 inline-flex items-center text-xs leading-5 font-semibold rounded-full ${
-                    item.status === 'completed' ? 'bg-green-100 text-green-800' : 
-                    item.status === 'failed' ? 'bg-red-100 text-red-800' : 
-                    item.status === 'downloading' ? 'bg-yellow-100 text-yellow-800' : 
-                    item.status === 'uploading' ? 'bg-blue-100 text-blue-800' :
-                    item.status === 'cancelled' ? 'bg-gray-100 text-gray-800' :
-                    item.status === 'transferring' ? 'bg-blue-100 text-blue-800' :
-                    item.status === 'encoding' ? 'bg-cyan-100 text-cyan-800' :
-                    item.status === 'encoded' ? 'bg-indigo-100 text-indigo-800' :
-                    'bg-purple-100 text-purple-800'
-                  }`}> 
-                    {icons[item.status] || null} 
-                    {item.status}
-                  </p>
-                </div>
+                </p>
+                <span className={`px-2.5 py-0.5 inline-flex items-center text-xs leading-5 font-medium rounded-full ${colors.bg} ${colors.text}`}> 
+                  {icons[item.status] || null} 
+                  <span className="capitalize">{item.status}</span>
+                </span>
               </div>
-              <div className="mt-2 sm:flex sm:justify-between sm:items-center">
-                <div className="sm:flex-1 min-w-0 mr-4">
-                  {item.title && <p className="text-sm text-gray-500 truncate block">{item.url}</p>} 
 
-                  {item.status === 'downloading' && item.message?.startsWith('Downloading:') &&
-                    <div className="flex items-center mt-1"> 
-                      <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mr-2"> 
-                        <div 
-                          className="bg-yellow-500 h-2.5 rounded-full" 
-                          style={{ width: `${item.message.match(/(\d+)%/)?.[1] ?? 0}%` }} 
-                        ></div> 
-                      </div> 
-                      <span className="text-xs text-yellow-700 whitespace-nowrap"> 
-                        {item.message.match(/(\d+)%/)?.[0] ?? '0%'} 
-                      </span> 
+              {/* Second row: URL */}
+              {item.title && <p className="text-xs text-gray-500 truncate block mb-1">{item.url}</p>} 
+
+              {/* Third row: Progress or Message */}
+              <div className="text-xs text-gray-600 mt-1 min-h-[1.25rem]"> {/* Min height to prevent layout shifts */}
+                {item.status === 'downloading' && item.message?.startsWith('Downloading:') &&
+                  <div className="flex items-center"> 
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 dark:bg-gray-700 mr-2"> 
+                      <div 
+                        className={`${colors.progress} h-1.5 rounded-full transition-all duration-300 ease-out`} 
+                        style={{ width: `${item.message.match(/(\d+(\.\d+)?)%/)?.[1] ?? 0}%` }} 
+                      ></div> 
                     </div> 
-                  } 
-                  {(!(item.status === 'downloading' && item.message?.startsWith('Downloading:')) && item.message) && ( 
-                     <p className="text-xs italic text-gray-400 truncate block mt-1">- {item.message}</p> 
-                  )} 
-                </div> 
-                 <div className="mt-2 sm:mt-0 flex-shrink-0 flex items-center space-x-2">
-                     <button 
-                         onClick={() => handleAction(onCancel)}
-                         disabled={cancellingItemId === item.id}
-                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed" 
-                       > 
-                         {cancellingItemId === item.id ? 'Cancelling...' : 'Cancel'} 
-                       </button> 
-                     {item.status === 'completed' && ( 
-                       <button 
-                         onClick={() => handleAction(onUpload)}
-                         disabled={uploadingItemId === item.id}
-                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed" 
-                       > 
-                         {uploadingItemId === item.id ? 'Uploading...' : 'Upload'} 
-                       </button> 
-                     )} 
-                     {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.filemoon_url && ( 
-                       <button 
-                         onClick={() => onOpenLink(item.filemoon_url)}
-                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700" 
-                       > 
-                          View Link 
-                       </button> 
-                     )} 
-                     {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.files_vc_url && ( 
-                       <button 
-                         onClick={() => onOpenLink(item.files_vc_url)}
-                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-green-600 hover:bg-green-700" 
-                       > 
-                          View Link 
-                       </button> 
-                     )} 
-                     {item.status === 'failed' && !item.filemoon_url && !item.files_vc_url && ( 
-                       <button 
-                         onClick={() => handleAction(onRetry)}
-                         disabled={retryingItemId === item.id} 
-                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-yellow-500 hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed" 
-                       > 
-                         {retryingItemId === item.id ? 'Retrying...' : 'Retry'} 
-                       </button> 
-                     )} 
-                     {item.status === 'failed' && item.filemoon_url && ( 
-                       <button 
-                         onClick={() => handleAction(onRestartEncoding)}
-                         disabled={restartingItemId === item.id} 
-                         className="px-2 py-1 text-xs font-medium rounded-md text-white bg-orange-500 hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed" 
-                       > 
-                         {restartingItemId === item.id ? 'Restarting...' : 'Restart Encoding'} 
-                       </button> 
-                     )} 
-                     {item.status === 'encoding' && ( 
-                       <div className="w-24 bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 flex items-center">
-                         <div 
-                           className="bg-cyan-600 h-2.5 rounded-full" 
-                           style={{ width: `${item.encoding_progress ?? 0}%` }} 
-                         > 
-                         </div> 
-                         <span className="ml-1 text-xs text-cyan-700">{`${item.encoding_progress ?? 0}%`}</span> 
-                       </div> 
-                     )} 
-                 </div> 
+                    <span className={`font-medium ${colors.text} whitespace-nowrap`}> 
+                      {item.message.match(/(\d+(\.\d+)?)%/)?.[0] ?? '0%'} 
+                    </span> 
+                  </div> 
+                } 
+                {item.status === 'encoding' && item.encoding_progress !== null && item.encoding_progress !== undefined &&
+                  <div className="flex items-center">
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 dark:bg-gray-700 mr-2">
+                      <div 
+                        className={`${colors.progress} h-1.5 rounded-full transition-all duration-300 ease-out`} 
+                        style={{ width: `${item.encoding_progress}%` }} 
+                      > 
+                      </div> 
+                    </div> 
+                     <span className={`font-medium ${colors.text} whitespace-nowrap`}>{`${item.encoding_progress}%`}</span> 
+                   </div> 
+                } 
+                {/* Display message if not a progress message */}
+                {(!(item.status === 'downloading' && item.message?.startsWith('Downloading:')) && !(item.status === 'encoding' && item.encoding_progress !== null) && item.message) && ( 
+                   <p className="italic text-gray-500 truncate block">- {item.message}</p> 
+                )} 
               </div> 
+              
+              {/* Fourth row: Action Buttons */}
+              <div className="mt-3 flex flex-wrap gap-2 items-center"> {/* Use gap for spacing */}
+                  {/* Cancel Button (Always potentially show unless encoded/completed?) */}
+                  {item.status !== 'encoded' && item.status !== 'completed' && item.status !== 'failed' && item.status !== 'cancelled' && (
+                    renderButton(
+                      'Cancel',
+                      () => handleAction(onCancel),
+                      'bg-red-500',
+                      'hover:bg-red-600',
+                      cancellingItemId === item.id,
+                      'Cancelling...',
+                      <XCircleIcon className="h-3.5 w-3.5" />
+                    )
+                  )}
+                   {/* Upload Button */}
+                   {(item.status === 'completed' || item.status === 'encoded') && ( 
+                     renderButton(
+                       'Upload',
+                       () => handleAction(onUpload),
+                       'bg-blue-600',
+                       'hover:bg-blue-700',
+                       uploadingItemId === item.id,
+                       'Uploading...',
+                       <ArrowUpTrayIcon className="h-3.5 w-3.5" />
+                     )
+                   )} 
+                   {/* View Link Buttons */}
+                   {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.filemoon_url && ( 
+                     renderButton(
+                       'Filemoon Link',
+                       () => onOpenLink(item.filemoon_url),
+                       'bg-purple-600',
+                       'hover:bg-purple-700',
+                       false, // Not disableable
+                       '',    // No loading state needed
+                       <LinkIcon className="h-3.5 w-3.5" />
+                     ) 
+                   )} 
+                   {(item.status === 'uploaded' || item.status === 'transferring' || item.status === 'encoding' || item.status === 'encoded') && item.files_vc_url && ( 
+                     renderButton(
+                       'Files.vc Link',
+                       () => onOpenLink(item.files_vc_url),
+                       'bg-emerald-600', // Changed color
+                       'hover:bg-emerald-700',
+                       false,
+                       '',
+                       <LinkIcon className="h-3.5 w-3.5" />
+                     ) 
+                   )} 
+                   {/* Retry Download/Upload Button */}
+                   {item.status === 'failed' && !item.filemoon_url && !item.files_vc_url && ( 
+                     renderButton(
+                       'Retry',
+                       () => handleAction(onRetry),
+                       'bg-yellow-500',
+                       'hover:bg-yellow-600',
+                       retryingItemId === item.id, 
+                       'Retrying...',
+                       <ArrowPathIcon className="h-3.5 w-3.5" />
+                     ) 
+                   )} 
+                   {/* Restart Encoding Button */}
+                   {item.status === 'failed' && item.filemoon_url && ( 
+                     renderButton(
+                       'Restart Encoding',
+                       () => handleAction(onRestartEncoding),
+                       'bg-orange-500',
+                       'hover:bg-orange-600',
+                       restartingItemId === item.id, 
+                       'Restarting...',
+                       <ArrowPathIcon className="h-3.5 w-3.5" />
+                     ) 
+                   )} 
+               </div> 
           </div>
       </div>
     </li>
@@ -260,7 +293,8 @@ export default function Home() {
     saveAppSettings: tauriSaveSettings,
     triggerUpload: tauriTriggerUpload,
     cancelItem: tauriCancelItem,
-    restartEncoding: tauriRestartEncoding
+    restartEncoding: tauriRestartEncoding,
+    openLink: tauriOpenLink, // Make sure openLink is provided by useTauri
   } = useTauri();
 
   const [url, setUrl] = useState('');
@@ -287,8 +321,8 @@ export default function Home() {
 
   const fetchQueue = useCallback(async () => {
     try {
-      console.log('Home: Fetching queue via Tauri...');
-      await tauriFetchQueue(); // Call the destructured function
+      // console.log('Home: Fetching queue via Tauri...'); // Keep for now
+      await tauriFetchQueue(); 
     } catch (fetchError: any) {
       console.error('Home: Error fetching queue via Tauri context:', fetchError);
     }
@@ -296,8 +330,8 @@ export default function Home() {
 
   const fetchSettings = useCallback(async () => {
     try {
-      console.log('Home: Fetching settings via Tauri...');
-      await tauriGetAppSettings(); // Call the destructured function
+      // console.log('Home: Fetching settings via Tauri...'); // Keep for now
+      await tauriGetAppSettings(); 
     } catch (fetchError: any) {
       console.error('Home: Error fetching settings via Tauri context:', fetchError);
       setError('Failed to load application settings. Using defaults.');
@@ -305,28 +339,17 @@ export default function Home() {
   }, [tauriGetAppSettings]);
 
   useEffect(() => {
-    // Initial fetch
     fetchQueue();
     fetchSettings();
-
     let intervalId: NodeJS.Timeout | null = null;
-
-    // Only set the interval if the settings modal is NOT open
     if (!showSettingsModal) {
-      console.log('Settings modal closed, starting queue fetch interval.');
-      intervalId = setInterval(fetchQueue, 5000); // Increased interval slightly
-    } else {
-      console.log('Settings modal open, interval fetch paused.');
+      intervalId = setInterval(fetchQueue, 5000); 
     }
-
-    // Cleanup function: clear interval if it exists
     return () => {
       if (intervalId) {
-        console.log('Cleaning up queue fetch interval.');
         clearInterval(intervalId);
       }
     };
-    // Add showSettingsModal to dependency array to re-run effect when it changes
   }, [fetchQueue, fetchSettings, showSettingsModal]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -346,54 +369,46 @@ export default function Home() {
           url: url,
           status: 'queued',
       };
-      
       const newItemId = await tauriAddToQueue(newItem as QueueItem); 
-      
       setMessage(`URL added to queue (ID: ${newItemId})`);
       setUrl('');
     } catch (submitError: any) {
-      // Convert the caught error to a string for checking
       const errorString = String(submitError);
-      let finalErrorMessage = 'Failed to add URL. Please check the URL or try again.'; // Default generic message
-
-      // Check the error string for our specific duplicate/archived URL messages from Rust
+      let finalErrorMessage = 'Failed to add URL. Please check the URL or try again.';
       const isAlreadyArchived = errorString.includes("has already been archived");
       const isAlreadyInQueue = errorString.includes("already exists in the active queue");
-
       if (isAlreadyArchived || isAlreadyInQueue) {
-        finalErrorMessage = errorString; // Use the specific message from Rust
-        // Don't log these expected errors to the console
+        finalErrorMessage = errorString; 
       } else {
-        // Log unexpected errors to the console for debugging
         console.error('Unexpected submission error object via Tauri:', submitError);
-        // Determine the best message for unexpected errors
         if (submitError?.message && submitError.message.toLowerCase() !== 'failed to add url') {
           finalErrorMessage = submitError.message;
         } else if (!errorString.toLowerCase().includes('failed to add url')) {
           finalErrorMessage = errorString;
         }
-        // If it's an unexpected error but the message is still generic, keep the improved default.
       }
-      
       setError(finalErrorMessage);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleClearQueue = async (type: 'completed' | 'failed' | 'finished' | 'cancelled') => {
+  const handleClearQueue = async (type: 'completed' | 'failed' | 'encoded' | 'cancelled' | 'all_finished') => { // Added 'encoded', 'all_finished'
     setIsClearing(true);
     setMessage('');
     setError('');
     try {
-      // Convert single type string to Vec<String> for the Rust command
-      const statusTypes = [type]; 
+      let statusTypes: string[];
+      if (type === 'all_finished') {
+        // Clear completed, encoded, cancelled - essentially anything done or stopped
+        statusTypes = ['completed', 'encoded', 'cancelled', 'failed']; // Include failed for 'all finished'? Or separate? Let's include it.
+      } else {
+         statusTypes = [type]; 
+      }
       
-      // Use the Tauri context function
       await tauriClearItems(statusTypes); 
-      
-      // Assuming success if no error is thrown by invoke
-      setMessage(`Successfully requested clearing of ${type} items.`);
+      setMessage(`Successfully requested clearing of ${type.replace('_', ' ')} items.`);
+      setShowClearDropdown(false); // Close dropdown after action
       
     } catch (clearError: any) {
       console.error(`Error clearing ${type} items via Tauri:`, clearError);
@@ -408,9 +423,7 @@ export default function Home() {
     setMessage('');
     setError('');
     try {
-      // Call the Tauri context function
       const result = await tauriTriggerUpload(itemId); 
-      
       if (result.success) {
         setMessage(result.message || `Upload initiated/completed for item ${itemId}.`);
       } else {
@@ -418,7 +431,7 @@ export default function Home() {
       }
     } catch (uploadError: any) {
       console.error(`Error uploading item ${itemId} via Tauri:`, uploadError);
-      setError(`Failed to upload item ${itemId}: ${uploadError.message}`);
+      setError(`Failed to upload item ${itemId}: ${uploadError.message || String(uploadError)}`); // Improved error display
     } finally {
       setUploadingItemId(null);
     }
@@ -429,9 +442,7 @@ export default function Home() {
     setMessage('');
     setError('');
     try {
-      // Call the Tauri context function
       const result = await tauriCancelItem(itemId);
-
       if (result.success) {
         setMessage(result.message || `Cancellation processed for item ${itemId}.`);
       } else {
@@ -439,7 +450,7 @@ export default function Home() {
       }
     } catch (cancelError: any) {
       console.error(`Error cancelling item ${itemId} via Tauri:`, cancelError);
-      setError(`Failed to cancel item ${itemId}: ${cancelError.message}`);
+      setError(`Failed to cancel item ${itemId}: ${cancelError.message || String(cancelError)}`);
     } finally {
       setCancellingItemId(null);
     }
@@ -454,7 +465,7 @@ export default function Home() {
       setMessage('Item re-queued successfully.');
     } catch (retryError: any) {
       console.error(`Error retrying item ${itemId} via Tauri:`, retryError);
-      setError(`Failed to retry item ${itemId}: ${retryError.message}`);
+      setError(`Failed to retry item ${itemId}: ${retryError.message || String(retryError)}`);
     } finally {
       setRetryingItemId(null);
     }
@@ -465,9 +476,7 @@ export default function Home() {
     setMessage('');
     setError('');
     try {
-      // Call the Tauri context function
       const result = await tauriRestartEncoding(itemId);
-
       if (result.success) {
         setMessage(result.message || `Restart encoding request sent for item ${itemId}.`);
       } else {
@@ -475,59 +484,51 @@ export default function Home() {
       }
     } catch (restartError: any) {
       console.error(`Error restarting encoding for item ${itemId} via Tauri:`, restartError);
-      setError(`Failed to restart encoding for item ${itemId}: ${restartError.message}`);
+      setError(`Failed to restart encoding for item ${itemId}: ${restartError.message || String(restartError)}`);
     } finally {
       setRestartingItemId(null);
     }
   };
-
+  
   const handleSaveSettings = async (modalLocalSettings: AppSettings) => {
     setIsSavingSettings(true);
     setMessage('');
     setError('');
     try {
       console.log("Attempting to save settings:", modalLocalSettings);
-      await tauriSaveSettings(modalLocalSettings); // Call the context save function
+      await tauriSaveSettings(modalLocalSettings); 
       setMessage('Settings saved successfully.');
-      setShowSettingsModal(false); // Close modal on successful save
+      setShowSettingsModal(false); 
     } catch (saveError: any) {
       console.error('Error saving settings:', saveError);
-      setError(`Failed to save settings: ${saveError.message}`);
-      // Keep modal open on error
+      setError(`Failed to save settings: ${saveError.message || String(saveError)}`);
     } finally {
       setIsSavingSettings(false);
     }
   };
 
-  const handleOpenLink = async (filecode: string | null | undefined) => {
-    console.log('handleOpenLink called with filecode:', filecode);
-    if (!filecode) return;
+  // Updated handleOpenLink to use Tauri context function
+  const handleOpenLink = async (link: string | null | undefined) => {
+    console.log('handleOpenLink called with link:', link);
+    if (!link) return;
     
-    let url;
-    if (filecode.startsWith('https://')) {
-      url = filecode;
-    } else if (filecode.startsWith('files_vc:')) {
-      const code = filecode.replace('files_vc:', '');
-      url = `https://files.vc/d/${code}`;
+    let urlToOpen: string;
+    if (link.startsWith('https://') || link.startsWith('http://')) {
+      urlToOpen = link;
+    } else if (link.startsWith('files_vc:')) {
+      const code = link.replace('files_vc:', '');
+      urlToOpen = `https://files.vc/d/${code}`; // Or the correct Files.vc URL structure
     } else {
-      url = `https://filemoon.sx/d/${filecode}`;
+      // Assume it's a Filemoon filecode if not a full URL or Files.vc link
+      urlToOpen = `https://filemoon.sx/d/${link}`;
     }
     
-    if (window.electronAPI) {
-      console.log(`Attempting to open link via Electron: ${url}`);
-      try {
-        const result = await window.electronAPI.openExternalLink(url);
-        if (!result.success) {
-          console.error('Failed to open link via Electron:', result.error);
-          setError('Could not open link in external browser.');
-        }
-      } catch (err) {
-          console.error('Error calling electronAPI.openExternalLink:', err);
-          setError('Error interacting with Electron to open link.');
-      }
-    } else {
-      console.warn('Electron API not found, opening link directly (may open in app window).');
-      window.open(url, '_blank');
+    console.log(`Attempting to open link via Tauri: ${urlToOpen}`);
+    try {
+      await tauriOpenLink(urlToOpen); // Use the function from context
+    } catch (err: any) {
+        console.error('Error opening link via Tauri:', err);
+        setError(`Could not open link: ${err.message || String(err)}`);
     }
   };
 
@@ -553,128 +554,147 @@ export default function Home() {
       }
     });
 
+  // --- Settings Modal Component (Modernized) ---
   const SettingsModal = () => {
-    // Initialize modal's local state
     const [modalSettings, setModalSettings] = useState<AppSettings>(createEmptySettings());
-    const [isLoadingSettings, setIsLoadingSettings] = useState(true); // Add loading state
+    const [isLoadingSettings, setIsLoadingSettings] = useState(true); 
 
-    // Fetch initial settings when modal mounts
     useEffect(() => {
       setIsLoadingSettings(true);
-      tauriGetAppSettings() // Call the getAppSettings function from context
+      tauriGetAppSettings()
         .then(fetchedSettings => {
           setModalSettings(fetchedSettings || createEmptySettings());
         })
         .catch(err => {
           console.error("Error fetching settings for modal:", err);
-          // Keep default empty settings on error
         })
         .finally(() => {
           setIsLoadingSettings(false);
         });
-    }, []); // Empty dependency array: run only once when modal mounts
+    }, []); 
 
     const handleModalSubmit = (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        handleSaveSettings(modalSettings); // Pass local modal state to save handler
+        handleSaveSettings(modalSettings); 
     }
+    
+    // Helper for input fields
+    const renderInput = (id: string, label: string, placeholder: string, value: string | undefined, onChange: (val: string) => void, type = "text", helpText?: string) => (
+        <div className="mb-4">
+            <label htmlFor={id} className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+            <input
+                id={id}
+                type={type} 
+                value={value || ''}
+                onChange={(e) => onChange(e.target.value)}
+                placeholder={placeholder}
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-gray-900" // Ensure text color is dark
+            />
+            {helpText && <p className="mt-1 text-xs text-gray-500">{helpText}</p>}
+        </div>
+    );
+    
+    // Helper for checkboxes
+    const renderCheckbox = (id: string, label: string, checked: boolean, onChange: (checked: boolean) => void) => (
+        <div className="mb-6 flex items-center">
+            <input
+                id={id}
+                type="checkbox"
+                checked={checked}
+                onChange={(e) => onChange(e.target.checked)}
+                className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+            />
+            <label htmlFor={id} className="ml-3 block text-sm text-gray-900"> {/* Increased margin */}
+                {label}
+            </label>
+        </div>
+    );
 
     return (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex justify-center items-center z-50">
-            <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-lg">
-                <h2 className="text-2xl font-bold mb-6">Application Settings</h2>
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-50 backdrop-blur-sm flex justify-center items-center z-50 p-4"> {/* Added padding */}
+            <div className="bg-white p-6 md:p-8 rounded-lg shadow-xl w-full max-w-lg transform transition-all sm:scale-100"> {/* Added transition */}
+                <h2 className="text-xl font-semibold mb-6 text-gray-800">Application Settings</h2>
                 
                 {isLoadingSettings ? (
-                  <p>Loading settings...</p>
+                   <div className="flex justify-center items-center h-40">
+                     <p className="text-gray-600">Loading settings...</p> {/* Nicer loading */}
+                   </div>
                 ) : (
                   <form onSubmit={handleModalSubmit}>
-                    <div className="mb-4">
-                        <label htmlFor="filemoonApiKey" className="block text-sm font-medium text-gray-700 mb-1">Filemoon API Key</label>
-                        <input
-                            id="filemoonApiKey"
-                            type="text" 
-                            value={modalSettings.filemoon_api_key || ''}
-                            onChange={(e) => setModalSettings(prev => ({ ...prev, filemoon_api_key: e.target.value }))}
-                            placeholder="Enter your Filemoon API Key"
-                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
-                        />
+                    {renderInput(
+                      "filemoonApiKey", 
+                      "Filemoon API Key", 
+                      "Enter your Filemoon API Key", 
+                      modalSettings.filemoon_api_key, 
+                      (val) => setModalSettings(prev => ({ ...prev, filemoon_api_key: val }))
+                    )}
+                    {renderInput(
+                      "filesVcApiKey", 
+                      "Files.vc API Key", 
+                      "Enter your Files.vc API Key", 
+                      modalSettings.files_vc_api_key, 
+                      (val) => setModalSettings(prev => ({ ...prev, files_vc_api_key: val }))
+                    )}
+                    {renderInput(
+                      "downloadDir", 
+                      "Download Directory", 
+                      "e.g., C:\\Users\\You\\Downloads\\PermaVid", 
+                      modalSettings.download_directory, 
+                      (val) => setModalSettings(prev => ({ ...prev, download_directory: val })),
+                      "text",
+                      "Leave blank to use system default download folder."
+                    )}
+                    
+                    <div className="mb-4"> {/* Group checkboxes */}
+                        {renderCheckbox(
+                          "autoUpload", 
+                          "Automatically upload after successful download", 
+                          modalSettings.auto_upload === 'true', 
+                          (checked) => setModalSettings(prev => ({ ...prev, auto_upload: checked ? 'true' : 'false' }))
+                        )}
+                        {renderCheckbox(
+                          "deleteAfterUpload", 
+                          "Delete local file after successful upload", 
+                          modalSettings.delete_after_upload === 'true', 
+                          (checked) => setModalSettings(prev => ({ ...prev, delete_after_upload: checked ? 'true' : 'false' }))
+                        )}
                     </div>
-                    <div className="mb-4">
-                        <label htmlFor="filesVcApiKey" className="block text-sm font-medium text-gray-700 mb-1">Files.vc API Key</label>
-                        <input
-                            id="filesVcApiKey"
-                            type="text" 
-                            value={modalSettings.files_vc_api_key || ''}
-                            onChange={(e) => setModalSettings(prev => ({ ...prev, files_vc_api_key: e.target.value }))}
-                            placeholder="Enter your Files.vc API Key"
-                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
-                        />
-                    </div>
-                    <div className="mb-4">
-                        <label htmlFor="downloadDir" className="block text-sm font-medium text-gray-700 mb-1">Download Directory</label>
-                        <input
-                            id="downloadDir"
-                            type="text"
-                            value={modalSettings.download_directory || ''}
-                            onChange={(e) => setModalSettings(prev => ({ ...prev, download_directory: e.target.value }))}
-                            placeholder="e.g., C:\Users\You\Downloads\PermaVid"
-                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
-                        />
-                        <p className="mt-1 text-xs text-gray-500">Enter the full path for downloads.</p>
-                    </div>
-                    <div className="mb-6 flex items-center">
-                        <input
-                            id="deleteAfterUpload"
-                            type="checkbox"
-                            checked={modalSettings.delete_after_upload === 'true'}
-                            onChange={(e) => setModalSettings(prev => ({ ...prev, delete_after_upload: e.target.checked ? 'true' : 'false' }))}
-                            className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
-                        />
-                        <label htmlFor="deleteAfterUpload" className="ml-2 block text-sm text-gray-900">
-                            Delete local file after successful upload
-                        </label>
-                    </div>
-                    <div className="mb-6 flex items-center">
-                        <input
-                            id="autoUpload"
-                            type="checkbox"
-                            checked={modalSettings.auto_upload === 'true'}
-                            onChange={(e) => setModalSettings(prev => ({ ...prev, auto_upload: e.target.checked ? 'true' : 'false' }))}
-                            className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
-                        />
-                        <label htmlFor="autoUpload" className="ml-2 block text-sm text-gray-900">
-                            Auto Upload
-                        </label>
-                    </div>
+
                     <div className="mb-6">
                         <label htmlFor="uploadTarget" className="block text-sm font-medium text-gray-700 mb-1">Upload Target</label>
                         <select
                             id="uploadTarget"
                             value={modalSettings.upload_target || 'filemoon'}
                             onChange={(e) => setModalSettings(prev => ({ ...prev, upload_target: e.target.value as 'filemoon' | 'files_vc' | 'both' }))}
-                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md text-gray-900" // Ensure text color
                         >
-                            <option value="filemoon">Filemoon</option>
-                            <option value="files_vc">Files.vc</option>
-                            <option value="both">Both</option>
+                            <option value="filemoon">Filemoon Only</option>
+                            <option value="files_vc">Files.vc Only</option>
+                            <option value="both">Both (Filemoon first, then Files.vc on fail)</option>
                         </select>
+                        <p className="mt-1 text-xs text-gray-500">Choose where to upload the files.</p>
                     </div>
 
-                    <div className="flex justify-end space-x-4">
+                    {/* Action buttons */}
+                    <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200"> {/* Added border top */}
                         <button
                             type="button"
                             onClick={() => setShowSettingsModal(false)}
                             disabled={isSavingSettings}
-                            className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                            className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 transition-colors"
                         >
                             Cancel
                         </button>
                         <button
                             type="submit"
                             disabled={isSavingSettings}
-                            className="py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
+                            className="py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 transition-colors flex items-center"
                         >
-                            {isSavingSettings ? 'Saving...' : 'Save Settings'}
+                            {isSavingSettings ? (
+                               <>
+                                 <Cog6ToothIcon className="h-4 w-4 mr-2 animate-spin" /> Saving...
+                               </>
+                             ) : 'Save Settings'}
                         </button>
                     </div>
                   </form>
@@ -683,30 +703,49 @@ export default function Home() {
         </div>
     );
   }
+  
+  // Helper for Dropdown Menu Items
+  const DropdownItem = ({ onClick, children, isActive = false }: { onClick: () => void; children: React.ReactNode; isActive?: boolean }) => (
+    <button
+      onClick={onClick}
+      className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${isActive ? 'font-semibold bg-gray-100' : ''}`}
+      role="menuitem"
+    >
+      {children}
+    </button>
+  );
 
   return (
-    <main className="flex min-h-screen flex-col items-center p-8 md:p-24">
-       <button 
-            onClick={() => setShowSettingsModal(true)}
-            className="absolute top-4 right-4 px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 text-sm"
-        >
-            Settings
-        </button>
-        <Link 
-            href="/gallery" 
-            className="absolute top-4 right-24 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-sm"
-        >
-            View Gallery
-        </Link>
+     <main className="flex min-h-screen flex-col items-center p-6 md:p-12 lg:p-16 bg-gray-100 dark:bg-gray-900"> {/* Subtle background */}
+       {/* Header section */}
+       <div className="w-full max-w-6xl mb-8 flex justify-between items-center">
+         <h1 className="text-2xl md:text-3xl font-bold text-gray-800 dark:text-gray-100">PermaVid Queue</h1>
+         <div className="flex items-center space-x-2">
+           <Link 
+              href="/gallery" 
+              className="px-3 py-1.5 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-xs font-medium transition-colors flex items-center space-x-1.5"
+           >
+               <SparklesIcon className="h-4 w-4"/> 
+               <span>View Gallery</span>
+           </Link>
+           <button 
+              onClick={() => setShowSettingsModal(true)}
+              className="p-1.5 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors"
+              aria-label="Settings"
+              title="Settings"
+           >
+               <Cog6ToothIcon className="h-5 w-5" />
+           </button>
+         </div>
+       </div>
 
-      <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm flex flex-col">
-        <h1 className="text-3xl md:text-4xl font-bold mb-8">PermaVid URL Adder & Queue</h1>
-
-        <form onSubmit={handleSubmit} className="w-full max-w-md mb-12">
-          <div className="mb-4">
-            <label htmlFor="urlInput" className="block text-sm font-medium text-gray-700 mb-1">
-              Video URL:
-            </label>
+      <div className="w-full max-w-6xl"> {/* Use max-w-6xl for wider content */}
+        {/* Input Form Section */}
+        <form onSubmit={handleSubmit} className="w-full bg-white dark:bg-gray-800 shadow-md rounded-lg p-6 mb-8">
+          <label htmlFor="urlInput" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+            Add Video URL to Queue:
+          </label>
+          <div className="flex space-x-3 mt-1">
             <input
               id="urlInput"
               type="url"
@@ -714,131 +753,164 @@ export default function Home() {
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://www.youtube.com/watch?v=..."
               required
-              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black"
+              className="flex-grow block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
             />
+            <button
+              type="submit"
+              disabled={isLoading || !url}
+              className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+            >
+               {isLoading ? (
+                 <>
+                   <Cog6ToothIcon className="h-4 w-4 mr-2 animate-spin" /> Adding...
+                 </>
+                ) : (
+                 <>
+                   <PlusIcon className="h-4 w-4 mr-1" /> Add URL
+                 </>
+                )}
+            </button>
           </div>
-           <button
-            type="submit"
-            disabled={isLoading || !url}
-            className="w-full inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isLoading ? 'Adding...' : 'Add URL to Queue'}
-          </button>
         </form>
 
-        {message && (
-          <p className="mt-4 text-green-600 text-center mb-4">{message}</p>
-        )}
-        {error && (
-          <p className="mt-4 text-red-600 text-center mb-4">{error}</p>
+        {/* Message/Error Area */}
+        {(message || error) && (
+          <div className={`p-3 rounded-md mb-6 text-sm ${
+             error 
+               ? 'bg-red-50 border border-red-200 text-red-700' 
+               : 'bg-green-50 border border-green-200 text-green-700'
+             }`}
+           >
+             {error || message}
+           </div>
         )}
 
-        <div className="w-full max-w-4xl">
-          <div className="flex justify-between items-center mb-4">
-             <h2 className="text-2xl font-semibold">Download Queue ({displayedQueueItems.length} items)</h2>
+        {/* Queue List Section */}
+        <div className="w-full bg-white dark:bg-gray-800 shadow-md overflow-hidden sm:rounded-lg">
+          {/* Queue Header & Controls */}
+          <div className="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
+             <h2 className="text-lg font-medium text-gray-900 dark:text-gray-100">
+               Download Queue ({displayedQueueItems.length} item{displayedQueueItems.length !== 1 ? 's' : ''})
+             </h2>
              <div className="flex items-center space-x-2">
-                <div className="relative">
-                    <button
-                        onClick={() => setShowFilterDropdown(!showFilterDropdown)}
-                        className="px-3 py-1 text-xs font-medium rounded-md text-white bg-gray-500 hover:bg-gray-600 flex items-center"
-                    >
-                        Filter: {filterStatus}
-                        <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                    </button>
-                    {showFilterDropdown && (
-                        <div 
-                            className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
-                            onMouseLeave={() => setShowFilterDropdown(false)}
-                        >
-                            <div className="py-1" role="menu" aria-orientation="vertical">
-                                {(['all', 'queued', 'downloading', 'completed', 'uploading', 'transferring', 'encoding', 'encoded', 'failed', 'cancelled'] as FilterStatus[]).map(status => (
-                                    <button
-                                        key={status}
-                                        onClick={() => { setFilterStatus(status); setShowFilterDropdown(false); }}
-                                        className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center"
-                                        role="menuitem"
-                                    >
-                                        {icons[status] || null} {status.charAt(0).toUpperCase() + status.slice(1)}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-                </div>
-                <div className="relative">
-                     <button
-                         onClick={() => setShowSortDropdown(!showSortDropdown)}
-                         className="px-3 py-1 text-xs font-medium rounded-md text-white bg-gray-500 hover:bg-gray-600 flex items-center"
-                     >
-                         Sort By...
-                         <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                     </button>
-                     {showSortDropdown && (
-                         <div
-                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
-                             onMouseLeave={() => setShowSortDropdown(false)}
-                         >
-                             <div className="py-1" role="menu" aria-orientation="vertical">
-                                 <button onClick={() => { setSortKey('added_at_desc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'added_at_desc' ? 'font-bold' : ''}`}>Added (Newest First)</button>
-                                 <button onClick={() => { setSortKey('added_at_asc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'added_at_asc' ? 'font-bold' : ''}`}>Added (Oldest First)</button>
-                                 <button onClick={() => { setSortKey('title_asc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'title_asc' ? 'font-bold' : ''}`}>Title (A-Z)</button>
-                                 <button onClick={() => { setSortKey('title_desc'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'title_desc' ? 'font-bold' : ''}`}>Title (Z-A)</button>
-                                 <button onClick={() => { setSortKey('status'); setShowSortDropdown(false); }} className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 ${sortKey === 'status' ? 'font-bold' : ''}`}>Status</button>
-                             </div>
-                         </div>
-                     )}
-                 </div>
+                 {/* Filter Dropdown */}
                  <div className="relative">
                      <button
-                         onClick={() => setShowClearDropdown(!showClearDropdown)}
-                         disabled={isClearing}
-                         className="px-3 py-1 text-xs font-medium rounded-md text-white bg-red-500 hover:bg-red-600 disabled:opacity-50 flex items-center"
+                         onClick={() => setShowFilterDropdown(!showFilterDropdown)}
+                         className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center space-x-1"
                      >
-                         Clear...
-                         <svg className="ml-1 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                         <AdjustmentsHorizontalIcon className="h-4 w-4"/>
+                         <span>Filter: <span className="capitalize font-semibold">{filterStatus}</span></span>
+                         <ChevronDownIcon className="h-3 w-3 ml-1" />
                      </button>
-                     {showClearDropdown && (
-                         <div
-                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
-                             onMouseLeave={() => setShowClearDropdown(false)}
+                     {showFilterDropdown && (
+                         <div 
+                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
+                             onMouseLeave={() => setShowFilterDropdown(false)}
                          >
                              <div className="py-1" role="menu" aria-orientation="vertical">
-                                 <button onClick={() => { handleClearQueue('completed'); setShowClearDropdown(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" role="menuitem">Clear Completed</button>
-                                 <button onClick={() => { handleClearQueue('failed'); setShowClearDropdown(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" role="menuitem">Clear Failed</button>
-                                 <button onClick={() => { handleClearQueue('cancelled'); setShowClearDropdown(false); }} className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100" role="menuitem">Clear Cancelled</button>
-                                 <button onClick={() => { handleClearQueue('finished'); setShowClearDropdown(false); }} className="block w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50 font-medium" role="menuitem">Clear All Finished</button>
+                                 {(['all', 'queued', 'downloading', 'completed', 'uploading', 'transferring', 'encoding', 'encoded', 'failed', 'cancelled'] as FilterStatus[]).map(status => (
+                                     <DropdownItem
+                                         key={status}
+                                         onClick={() => { setFilterStatus(status); setShowFilterDropdown(false); }}
+                                         isActive={filterStatus === status}
+                                     >
+                                         <div className="flex items-center">
+                                           {icons[status] || <span className="w-4 h-4 mr-1.5"></span>} {/* Placeholder for spacing if no icon */}
+                                           <span className="capitalize">{status}</span>
+                                         </div>
+                                     </DropdownItem>
+                                 ))}
                              </div>
                          </div>
                      )}
                  </div>
+                 {/* Sort Dropdown */}
+                 <div className="relative">
+                      <button
+                          onClick={() => setShowSortDropdown(!showSortDropdown)}
+                          className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center space-x-1"
+                      >
+                          <ArrowsUpDownIcon className="h-4 w-4"/>
+                          <span>Sort</span>
+                          <ChevronDownIcon className="h-3 w-3 ml-1" />
+                      </button>
+                      {showSortDropdown && (
+                          <div
+                              className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
+                              onMouseLeave={() => setShowSortDropdown(false)}
+                          >
+                              <div className="py-1" role="menu" aria-orientation="vertical">
+                                  <DropdownItem onClick={() => { setSortKey('added_at_desc'); setShowSortDropdown(false); }} isActive={sortKey === 'added_at_desc'}>Added (Newest)</DropdownItem>
+                                  <DropdownItem onClick={() => { setSortKey('added_at_asc'); setShowSortDropdown(false); }} isActive={sortKey === 'added_at_asc'}>Added (Oldest)</DropdownItem>
+                                  <DropdownItem onClick={() => { setSortKey('title_asc'); setShowSortDropdown(false); }} isActive={sortKey === 'title_asc'}>Title (A-Z)</DropdownItem>
+                                  <DropdownItem onClick={() => { setSortKey('title_desc'); setShowSortDropdown(false); }} isActive={sortKey === 'title_desc'}>Title (Z-A)</DropdownItem>
+                                  <DropdownItem onClick={() => { setSortKey('status'); setShowSortDropdown(false); }} isActive={sortKey === 'status'}>Status</DropdownItem>
+                              </div>
+                          </div>
+                      )}
+                  </div>
+                  {/* Clear Dropdown */}
+                  <div className="relative">
+                      <button
+                          onClick={() => setShowClearDropdown(!showClearDropdown)}
+                          disabled={isClearing}
+                          className="px-3 py-1.5 text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 transition-colors flex items-center space-x-1"
+                      >
+                         <TrashIcon className="h-4 w-4"/>
+                         <span>Clear</span>
+                          <ChevronDownIcon className="h-3 w-3 ml-1" />
+                      </button>
+                      {showClearDropdown && (
+                          <div
+                              className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
+                              onMouseLeave={() => setShowClearDropdown(false)}
+                          >
+                              <div className="py-1" role="menu" aria-orientation="vertical">
+                                  {/* Updated clear options */}
+                                  <DropdownItem onClick={() => handleClearQueue('completed')}>Clear Downloaded</DropdownItem>
+                                  <DropdownItem onClick={() => handleClearQueue('encoded')}>Clear Encoded</DropdownItem>
+                                  <DropdownItem onClick={() => handleClearQueue('failed')}>Clear Failed</DropdownItem>
+                                  <DropdownItem onClick={() => handleClearQueue('cancelled')}>Clear Cancelled</DropdownItem>
+                                  <div className="border-t border-gray-200 dark:border-gray-600 my-1"></div>
+                                  <DropdownItem onClick={() => handleClearQueue('all_finished')}>
+                                    <span className="text-red-600 font-medium">Clear All Finished</span>
+                                  </DropdownItem>
+                              </div>
+                          </div>
+                      )}
+                  </div>
              </div>
            </div>
 
-           <div className="bg-white shadow overflow-hidden sm:rounded-md mt-4">
-             <ul role="list" className="divide-y divide-gray-200">
-               {displayedQueueItems.length === 0 ? (
-                 <li className="px-4 py-4 sm:px-6 text-center text-gray-500">
-                   No items in the queue{filterStatus !== 'all' ? ` matching filter '${filterStatus}'` : ''}. Add a URL above!
-                 </li>
-               ) : (
-                 displayedQueueItems.map((item) => (
-                   <QueueListItem
-                     key={item.id ?? item.url}
-                     item={item}
-                     uploadingItemId={uploadingItemId}
-                     cancellingItemId={cancellingItemId}
-                     restartingItemId={restartingItemId}
-                     retryingItemId={retryingItemId}
-                     onUpload={handleUpload}
-                     onCancel={handleCancel}
-                     onRetry={handleRetry}
-                     onRestartEncoding={handleRestartEncoding}
-                     onOpenLink={handleOpenLink}
-                   />
-                 ))
-               )}
-             </ul>
-           </div>
+           {/* Queue List */}
+           <ul role="list" className="divide-y divide-gray-200 dark:divide-gray-700">
+             {contextQueue.length === 0 ? ( // Check original context queue length for empty state
+               <li className="px-4 py-10 sm:px-6 text-center text-gray-500 dark:text-gray-400">
+                 The queue is empty. Add a URL above to get started!
+               </li>
+             ) : displayedQueueItems.length === 0 ? (
+                <li className="px-4 py-10 sm:px-6 text-center text-gray-500 dark:text-gray-400">
+                  No items match the current filter (<span className="capitalize font-medium">{filterStatus}</span>).
+                </li>
+             ) : (
+               displayedQueueItems.map((item) => (
+                 <QueueListItem
+                   key={item.id ?? item.url} // Use URL as fallback key
+                   item={item}
+                   uploadingItemId={uploadingItemId}
+                   cancellingItemId={cancellingItemId}
+                   restartingItemId={restartingItemId}
+                   retryingItemId={retryingItemId}
+                   onUpload={handleUpload}
+                   onCancel={handleCancel}
+                   onRetry={handleRetry}
+                   onRestartEncoding={handleRestartEncoding}
+                   onOpenLink={handleOpenLink}
+                 />
+               ))
+             )}
+           </ul>
         </div>
       </div>
 

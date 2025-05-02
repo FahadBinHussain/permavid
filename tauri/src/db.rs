@@ -812,4 +812,64 @@ impl Database {
 
         Ok(())
     }
+
+    // --- ADDED: Get items needing status check ---
+    pub fn get_items_for_status_check(&self) -> Result<Vec<(String, String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT q.id, q.filemoon_url, s.value 
+             FROM queue q 
+             JOIN settings s ON s.key = 'filemoon_api_key' 
+             WHERE q.status IN ('transferring', 'encoding') AND q.filemoon_url IS NOT NULL"
+        )?;
+
+        let item_iter = stmt.query_map([], |row| {
+            Ok((
+                row.get(0)?, // id
+                row.get(1)?, // filemoon_url (filecode)
+                row.get(2)?, // api_key
+            ))
+        })?;
+
+        let mut items = Vec::new();
+        for item_result in item_iter {
+            if let Ok(item) = item_result {
+                items.push(item);
+            }
+        }
+        Ok(items)
+    }
+    // --- END ADDED ---
+
+    // --- ADDED: Update item details after status check ---
+    pub fn update_item_encoding_details(
+        &self,
+        id: &str,
+        status: &str,
+        encoding_progress: Option<i32>,
+        message: Option<String>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().timestamp_millis();
+
+        conn.execute(
+            "UPDATE queue SET 
+                status = ?,
+                encoding_progress = ?,
+                message = ?,
+                updated_at = ? 
+            WHERE id = ?",
+            params![
+                status,
+                encoding_progress,
+                message,
+                now,
+                id
+            ],
+        )?;
+
+        Ok(())
+    }
+    // --- END ADDED ---
+
 } 

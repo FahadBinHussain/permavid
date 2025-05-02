@@ -4,7 +4,10 @@
 // Ensure db module is included
 mod db;
 
-use db::{Database, QueueItem, AppSettings};
+// Explicitly use the Database struct
+use crate::db::Database;
+
+use db::{QueueItem, AppSettings};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{Manager, State};
@@ -109,8 +112,38 @@ struct FilemoonRestartResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct FilemoonEncodingStatusResponse {
-    // Add other fields if the API returns more data
+    status: u16,
+    msg: String,
+    result: Option<FilemoonEncodingStatusResult>,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FilemoonEncodingStatusResult {
+    file_code: String,
+    quality: Option<String>,
+    name: Option<String>,
+    progress: Option<String>, // Can be numeric or string like "91"
+    status: String,          // e.g., "ENCODING", "FINISHED", "ERROR"
+    error: Option<String>,
+}
+
+// --- ADDED: Structs for Filemoon File Info API ---
+#[derive(Debug, Serialize, Deserialize)]
+struct FilemoonFileInfoResponse {
+    status: u16,
+    msg: String,
+    result: Option<Vec<FilemoonFileInfoResult>>, // API returns an array
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FilemoonFileInfoResult {
+    status: u16, // Status per file in the result array
+    file_code: String,
+    name: Option<String>,
+    canplay: Option<i32>, // 0 or 1
+    // Add other fields if needed (views, length, uploaded)
+}
+// --- END ADDED ---
 
 #[tauri::command]
 fn open_external_link(window: tauri::Window, url: String) -> Result<(), String> {
@@ -549,24 +582,10 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         // --- End Step 1 ---
         
         // --- Step 2: Upload to the Obtained Server URL --- 
-        let file = match File::open(&local_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                 {
-                     let db_err = app_state.db.lock().unwrap();
-                     let _ = db_err.update_item_status(&item_id_clone, "failed", Some(format!("Failed to open file: {}", e)));
-                 }
-                 return Err(format!("Failed to open file: {}", e));
-            }
-        };
-        let stream = FramedRead::new(file, BytesCodec::new());
-        let file_body = reqwest::Body::wrap_stream(stream.map_ok(Bytes::from));
-        
         // Sanitize the filename before sending it to Filemoon
         let sanitized_filename = sanitize_filename(&filename);
         println!("Sanitized filename for upload: {}", sanitized_filename);
         
-        // Go back to multipart but try a different approach
         // Read file into memory to avoid streaming issues
         let file_bytes = fs::read(&local_path).map_err(|e| format!("Failed to read file: {}", e))?;
         
@@ -602,12 +621,12 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                                     println!("Filemoon upload successful! Filecode: {}", filecode);
                                     {
                                         let db_lock = app_state.db.lock().unwrap();
-                                        let _ = db_lock.update_item_status(&item_id_clone, "uploaded", Some(format!("Filemoon: {}", filecode)));
+                                        let _ = db_lock.update_item_status(&item_id_clone, "transferring", Some(format!("Filemoon: {}. Awaiting encoding...", filecode)));
                                         let mut updated_item = db_lock.get_item_by_id(&item_id_clone).map_err(|e| format!("DB Error: {}", e))?.unwrap();
                                         updated_item.filemoon_url = Some(filecode.clone());
                                         if let Err(e) = db_lock.update_queue_item(&updated_item) { eprintln!("Failed to update Filemoon URL in DB: {}", e); }
                                     }
-                                    final_message = format!("Upload to Filemoon successful (Filecode: {}).", filecode);
+                                    final_message = format!("Upload to Filemoon successful (Filecode: {}). Awaiting encoding.", filecode);
                                     success = true;
                                 } else {
                                     let err_msg = format!("Filemoon Upload API Error (Status {}): {} - Parsed from JSON: {:?}", 
@@ -760,6 +779,172 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
     }
 }
 
+// --- ADDED: Function to check Filemoon Encoding Status ---
+async fn check_filemoon_status(item_id: &str, filecode: &str, api_key: &str, app_handle: &tauri::AppHandle) {
+    println!("Checking Filemoon status for item: {}, filecode: {}", item_id, filecode);
+    let client = reqwest::Client::new();
+    let url = "https://api.filemoon.sx/api/encoding/status";
+    
+    match client.get(url)
+        .query(&[("key", api_key), ("file_code", filecode)])
+        .send()
+        .await {
+        Ok(response) => {
+            let status = response.status();
+            match response.json::<FilemoonEncodingStatusResponse>().await {
+                Ok(resp_body) => {
+                    if status.is_success() && resp_body.status == 200 {
+                        if let Some(result) = resp_body.result {
+                            let api_status = result.status.to_uppercase();
+                            let progress = result.progress.and_then(|p| p.parse::<i32>().ok());
+                            let mut message = format!("Filemoon status: {}", api_status);
+                            if let Some(p) = progress { message.push_str(&format!(" ({}%)", p)); }
+                            
+                            let new_db_status = match api_status.as_str() {
+                                "ENCODING" => "encoding",
+                                "FINISHED" | "ACTIVE" => "encoded", // Consider FINISHED or ACTIVE as ready
+                                "ERROR" => "failed",
+                                _ => "transferring", // Keep checking if status unknown
+                            };
+                            
+                            println!("Item {} Filemoon Status Update: DB={}, API={}, Progress={:?}", item_id, new_db_status, api_status, progress);
+                            
+                            // Always update DB with the status from encoding/status endpoint
+                            let state: State<'_, AppState> = app_handle.state();
+                            let db_lock = state.db.lock().unwrap();
+                            let _ = (*db_lock).update_item_encoding_details(item_id, new_db_status, progress, Some(message));
+                            
+                        } else {
+                            eprintln!("Filemoon status check successful but no result data for item {}", item_id);
+                            // --- ADDED: Handle case where encoding status might be empty/invalid after upload --- 
+                            // Optionally, trigger a file/info check here as a fallback
+                             println!("No result data in encoding/status for {}. Triggering file/info check.", item_id);
+                             let item_id_clone = item_id.to_string();
+                             let filecode_clone = filecode.to_string();
+                             let api_key_clone = api_key.to_string();
+                             let handle_clone = app_handle.clone();
+                             tokio::spawn(async move {
+                                 check_filemoon_file_info(&item_id_clone, &filecode_clone, &api_key_clone, &handle_clone).await;
+                             });
+                            // --- END ADDED ---
+                        }
+                    } else {
+                        eprintln!("Filemoon Status API Error (Status {}): {} for item {}", resp_body.status, resp_body.msg, item_id);
+                         // Maybe update DB status to failed?
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to parse Filemoon Status response for item {}: {}", item_id, e);
+                    // Maybe update DB status to failed?
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Filemoon Status request failed for item {}: {}", item_id, e);
+             // Maybe update DB status to failed?
+        }
+    }
+}
+// --- END ADDED ---
+
+// --- ADDED: Function to check Filemoon File Info API ---
+// Returns Ok(true) if file is ready (canplay=1), Ok(false) if checked but not ready, Err on API/parse failure.
+async fn check_filemoon_file_info(item_id: &str, filecode: &str, api_key: &str, app_handle: &tauri::AppHandle) -> Result<bool, String> {
+    println!("Checking Filemoon file/info for item: {}, filecode: {}", item_id, filecode);
+    let client = reqwest::Client::new();
+    let url = "https://api.filemoon.sx/api/file/info"; // Correct endpoint
+    
+    match client.get(url)
+        .query(&[("key", api_key), ("file_code", filecode)])
+        .send()
+        .await {
+        Ok(response) => {
+            let status = response.status();
+            // Read body text first for better error reporting
+            match response.text().await {
+                Ok(raw_text) => {
+                    match serde_json::from_str::<FilemoonFileInfoResponse>(&raw_text) {
+                        Ok(resp_body) => {
+                            if status.is_success() && resp_body.status == 200 {
+                                if let Some(results) = resp_body.result {
+                                    if let Some(file_info) = results.iter().find(|r| r.file_code == filecode) {
+                                        if file_info.status == 200 && file_info.canplay == Some(1) {
+                                            println!("Item {} Filemoon file/info shows canplay=1. Marking as encoded.", item_id);
+                                            let state: State<'_, AppState> = app_handle.state();
+                                            let db_lock = state.db.lock().unwrap();
+                                            let _ = (*db_lock).update_item_encoding_details(
+                                                item_id, 
+                                                "encoded", 
+                                                Some(100), 
+                                                Some("Filemoon status: Ready (canplay=1)".to_string())
+                                            );
+                                            Ok(true) // File is ready
+                                        } else {
+                                            println!("Item {} Filemoon file/info status ({}): canplay={:?}. Not ready yet.", item_id, file_info.status, file_info.canplay);
+                                            Ok(false) // Checked, but not ready
+                                        }
+                                    } else {
+                                        let err_msg = format!("Filemoon file/info successful but filecode {} not found in results for item {}. Raw: {}", filecode, item_id, raw_text);
+                                        eprintln!("{}", err_msg);
+                                        Err(err_msg) // Error: filecode mismatch
+                                    }
+                                } else {
+                                    let err_msg = format!("Filemoon file/info successful but no result array for item {}. Raw: {}", item_id, raw_text);
+                                     eprintln!("{}", err_msg);
+                                    Err(err_msg)
+                                }
+                            } else {
+                                let err_msg = format!("Filemoon file/info API Error (HTTP {}, API Status {}): {} for item {}. Raw: {}", status, resp_body.status, resp_body.msg, item_id, raw_text);
+                                 eprintln!("{}", err_msg);
+                                Err(err_msg)
+                            }
+                        }
+                        Err(e) => {
+                            let err_msg = format!("Failed to parse Filemoon file/info response for item {}: {}. Raw Body: {}", item_id, e, raw_text);
+                            eprintln!("{}", err_msg);
+                            Err(err_msg)
+                        }
+                    }
+                }
+                Err(e) => {
+                     let err_msg = format!("Failed to read Filemoon file/info response body for item {}: {}", item_id, e);
+                     eprintln!("{}", err_msg);
+                     Err(err_msg)
+                }
+            }
+            
+        }
+        Err(e) => {
+            let err_msg = format!("Filemoon file/info request failed for item {}: {}", item_id, e);
+            eprintln!("{}", err_msg);
+            Err(err_msg)
+        }
+    }
+}
+// --- END ADDED ---
+
+// --- ADDED: Orchestrator function for checking Filemoon readiness ---
+async fn check_filemoon_readiness(item_id: &str, filecode: &str, api_key: &str, app_handle: &tauri::AppHandle) {
+    // 1. Check file/info first
+    match check_filemoon_file_info(item_id, filecode, api_key, app_handle).await {
+        Ok(true) => {
+            // file/info confirmed ready, status updated inside, nothing more to do.
+            println!("Item {} confirmed ready via file/info.", item_id);
+        }
+        Ok(false) => {
+            // file/info says not ready yet, proceed to check encoding/status
+            println!("Item {} not ready via file/info, checking encoding/status...", item_id);
+            check_filemoon_status(item_id, filecode, api_key, app_handle).await;
+        }
+        Err(e) => {
+            // file/info failed (API error, parse error, etc.), proceed to check encoding/status as fallback
+            eprintln!("File/info check failed for {}: {}. Falling back to encoding/status check...", item_id, e);
+            check_filemoon_status(item_id, filecode, api_key, app_handle).await;
+        }
+    }
+}
+// --- END ADDED ---
+
 // --- Background Queue Processing ---
 
 async fn process_queue_background(app_handle: tauri::AppHandle) {
@@ -813,7 +998,7 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
 
                 let settings = match (*db_lock).get_settings() {
                     Ok(s) => s,
-                    Err(e) => {
+        Err(e) => {
                         eprintln!("Error getting settings for item {}: {}", item_id, e);
                         let _ = (*db_lock).update_item_status(&item_id, "failed", Some(format!("Failed to get settings: {}", e)));
                         AppSettings::default() // Return default to avoid breaking flow, but log error
@@ -1128,10 +1313,41 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
             }
             // --- End Download Execution --- 
 
-        } 
+        } else {
+            // --- Check status of transferring/encoding items if no new item to process ---
+            let items_to_check: Vec<(String, String, String)>;
+            {
+                let state: State<'_, AppState> = app_handle.state();
+                // Define db_lock before using it
+                let db_lock = state.db.lock().unwrap(); 
+                // Explicitly dereference db_lock
+                items_to_check = match (*db_lock).get_items_for_status_check() {
+                    Ok(items) => items,
+                    Err(e) => {
+                        eprintln!("DB Error fetching items for status check: {}", e);
+                        Vec::new() // Empty vec on error
+                    }
+                };
+            }
+
+            if !items_to_check.is_empty() {
+                should_sleep_long = false; // Found items to check, don't sleep long
+                for (item_id, filecode, api_key) in items_to_check {
+                    // Spawn a task for each status check
+                    let handle_clone = app_handle.clone();
+                    tokio::spawn(async move {
+                        // Call the new orchestrator function
+                        check_filemoon_readiness(&item_id, &filecode, &api_key, &handle_clone).await;
+                    });
+                }
+            } else {
+                // No new items AND no items to check status for, sleep long
+                should_sleep_long = true;
+            }
+        }
         
         // Sleep before next check
-        let sleep_duration = if should_sleep_long { Duration::from_secs(10) } else { Duration::from_millis(500) }; // Sleep less if we processed an item
+        let sleep_duration = if should_sleep_long { Duration::from_secs(15) } else { Duration::from_secs(5) }; // Check status more often than new items
         sleep(sleep_duration).await;
         
     }

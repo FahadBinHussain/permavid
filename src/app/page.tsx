@@ -203,8 +203,8 @@ const QueueListItem: React.FC<QueueItemProps> = ({
               
               {/* Fourth row: Action Buttons */}
               <div className="mt-3 flex flex-wrap gap-2 items-center"> {/* Use gap for spacing */}
-                  {/* Cancel Button (Always potentially show unless encoded/completed?) */}
-                  {item.status !== 'encoded' && item.status !== 'completed' && item.status !== 'failed' && item.status !== 'cancelled' && (
+                  {/* Cancel Button (Show only for specific states) */}
+                  {(item.status === 'queued' || item.status === 'downloading' || item.status === 'uploading') && (
                     renderButton(
                       'Cancel',
                       () => handleAction(onCancel),

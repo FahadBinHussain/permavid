@@ -806,56 +806,69 @@ async fn check_filemoon_status(item_id: &str, filecode: &str, api_key: &str, app
         .await {
         Ok(response) => {
             let status = response.status();
-            match response.json::<FilemoonEncodingStatusResponse>().await {
-                Ok(resp_body) => {
-                    if status.is_success() && resp_body.status == 200 {
-                        if let Some(result) = resp_body.result {
-                            let api_status = result.status.to_uppercase();
-                            let progress = result.progress.and_then(|p| p.parse::<i32>().ok());
-                            let mut message = format!("Filemoon status: {}", api_status);
-                            if let Some(p) = progress { message.push_str(&format!(" ({}%)", p)); }
-                            
-                            let new_db_status = match api_status.as_str() {
-                                "ENCODING" => "encoding",
-                                "FINISHED" | "ACTIVE" => "encoded", // Consider FINISHED or ACTIVE as ready
-                                "ERROR" => "failed",
-                                _ => "transferring", // Keep checking if status unknown
-                            };
-                            
-                            println!("Item {} Filemoon Status Update: DB={}, API={}, Progress={:?}", item_id, new_db_status, api_status, progress);
-                            
-                            // Always update DB with the status from encoding/status endpoint
-                            let state: State<'_, AppState> = app_handle.state();
-                            let db_lock = state.db.lock().unwrap();
-                            let _ = (*db_lock).update_item_encoding_details(item_id, new_db_status, progress, Some(message));
-                            
-                        } else {
-                            eprintln!("Filemoon status check successful but no result data for item {}", item_id);
-                            // --- ADDED: Handle case where encoding status might be empty/invalid after upload --- 
-                            // Optionally, trigger a file/info check here as a fallback
-                             println!("No result data in encoding/status for {}. Triggering file/info check.", item_id);
-                             let item_id_clone = item_id.to_string();
-                             let filecode_clone = filecode.to_string();
-                             let api_key_clone = api_key.to_string();
-                             let handle_clone = app_handle.clone();
-                             tokio::spawn(async move {
-                                 check_filemoon_file_info(&item_id_clone, &filecode_clone, &api_key_clone, &handle_clone).await;
-                             });
-                            // --- END ADDED ---
+            match response.text().await { // Read as text first
+                Ok(raw_text) => {
+                    println!("Item {} Filemoon Status Raw Response Status: {}", item_id, status);
+                    println!("Item {} Filemoon Status Raw Response Body: {}", item_id, raw_text);
+
+                    // Now attempt to parse the raw text as JSON
+                    match serde_json::from_str::<FilemoonEncodingStatusResponse>(&raw_text) {
+                        Ok(resp_body) => {
+                            if status.is_success() && resp_body.status == 200 {
+                                if let Some(result) = resp_body.result {
+                                    let api_status = result.status.to_uppercase();
+                                    let progress = result.progress.and_then(|p| p.parse::<i32>().ok());
+                                    let mut message = format!("Filemoon status: {}", api_status);
+                                    if let Some(p) = progress { message.push_str(&format!(" ({}%)", p)); }
+
+                                    let new_db_status = match api_status.as_str() {
+                                        "ENCODING" => "encoding",
+                                        "PENDING" => "encoding",
+                                        "FINISHED" | "ACTIVE" => "encoded", // Consider FINISHED or ACTIVE as ready
+                                        "ERROR" => "failed",
+                                        _ => "transferring", // Keep checking if status unknown
+                                    };
+
+                                    println!("Item {} Filemoon Status Update: DB={}, API={}, Progress={:?}", item_id, new_db_status, api_status, progress);
+
+                                    // Always update DB with the status from encoding/status endpoint
+                                    let state: State<'_, AppState> = app_handle.state();
+                                    let db_lock = state.db.lock().unwrap();
+                                    let _ = (*db_lock).update_item_encoding_details(item_id, new_db_status, progress, Some(message));
+
+                                } else {
+                                    eprintln!("Item {} Filemoon status check successful but no result data (parsed from JSON)", item_id);
+                                    // Trigger file/info check as fallback
+                                    println!("Item {}: No result data in encoding/status for {}. Triggering file/info check.", item_id, item_id);
+                                    let item_id_clone = item_id.to_string();
+                                    let filecode_clone = filecode.to_string();
+                                    let api_key_clone = api_key.to_string();
+                                    let handle_clone = app_handle.clone();
+                                    tokio::spawn(async move {
+                                        check_filemoon_file_info(&item_id_clone, &filecode_clone, &api_key_clone, &handle_clone).await;
+                                    });
+                                }
+                            } else {
+                                eprintln!("Item {} Filemoon Status API Error (HTTP {}, API Status {}): {} (parsed from JSON)", item_id, status, resp_body.status, resp_body.msg);
+                                // Maybe update DB status to failed?
+                            }
                         }
-                    } else {
-                        eprintln!("Filemoon Status API Error (Status {}): {} for item {}", resp_body.status, resp_body.msg, item_id);
-                         // Maybe update DB status to failed?
+                        Err(e) => {
+                            // JSON parsing failed
+                            eprintln!("Item {} Failed to parse Filemoon Status JSON response: {}. Raw Body: {}", item_id, e, raw_text);
+                            // Maybe update DB status to failed?
+                        }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to parse Filemoon Status response for item {}: {}", item_id, e);
+                    // Failed to even read the response body as text
+                    eprintln!("Item {} Failed to read Filemoon Status response body (HTTP {}): {}", item_id, status, e);
                     // Maybe update DB status to failed?
                 }
             }
         }
         Err(e) => {
-            eprintln!("Filemoon Status request failed for item {}: {}", item_id, e);
+            eprintln!("Item {} Filemoon Status request failed: {}", item_id, e);
              // Maybe update DB status to failed?
         }
     }
@@ -894,7 +907,19 @@ async fn check_filemoon_file_info(item_id: &str, filecode: &str, api_key: &str, 
                                                 Some("Filemoon status: Ready (canplay=1)".to_string())
                                             );
                                             Ok(true) // File is ready
-                                        } else {
+                                        } else if file_info.status == 200 { // File exists but not playable yet
+                                            println!("Item {} Filemoon file/info shows canplay!=1. Marking as encoding.", item_id);
+                                            // Update DB to encoding
+                                            let state: State<'_, AppState> = app_handle.state();
+                                            let db_lock = state.db.lock().unwrap();
+                                            let _ = (*db_lock).update_item_encoding_details(
+                                                item_id,
+                                                "encoding",
+                                                None, // Progress unknown from file/info
+                                                Some(format!("Filemoon status: Exists (canplay={:?})", file_info.canplay))
+                                            );
+                                            Ok(false) // Checked, but not ready (status is now encoding)
+                                        } else { // File status is not 200 (e.g., error, deleted?)
                                             println!("Item {} Filemoon file/info status ({}): canplay={:?}. Not ready yet.", item_id, file_info.status, file_info.canplay);
                                             Ok(false) // Checked, but not ready
                                         }

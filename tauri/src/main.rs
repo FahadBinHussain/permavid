@@ -145,6 +145,21 @@ struct FilemoonFileInfoResult {
 }
 // --- END ADDED ---
 
+// --- ADDED: Helper to extract video ID from common FB URLs ---
+fn extract_facebook_video_id(url_str: &str) -> Option<String> {
+    let reel_regex = Regex::new(r"/reel/(\d+)").unwrap();
+    let watch_regex = Regex::new(r"[?&]v=(\d+)").unwrap();
+
+    if let Some(caps) = reel_regex.captures(url_str) {
+        return caps.get(1).map(|m| m.as_str().to_string());
+    }
+    if let Some(caps) = watch_regex.captures(url_str) {
+        return caps.get(1).map(|m| m.as_str().to_string());
+    }
+    None
+}
+// --- END ADDED ---
+
 #[tauri::command]
 fn open_external_link(window: tauri::Window, url: String) -> Result<(), String> {
     match window.shell_scope().open(&url, None) {
@@ -1196,8 +1211,30 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                                           .or_else(|| info.get("original_url")) // Fallback to original_url
                                                           .and_then(|v| v.as_str());
 
-                                            println!("Item {}: Comparing JSON URL '{:?}' with item URL '{}'", item_id, json_url, item_original_url);
-                                            if json_url == Some(&item_original_url) {
+                                            let urls_match = match json_url {
+                                                Some(j_url) => {
+                                                    // Try matching by extracted ID first
+                                                    let original_id = extract_facebook_video_id(&item_original_url);
+                                                    let json_id = extract_facebook_video_id(j_url);
+                                                    println!("Item {}: Comparing Original URL '{}' (ID: {:?}) with JSON URL '{}' (ID: {:?})", 
+                                                             item_id, item_original_url, original_id, j_url, json_id);
+                                                    
+                                                    if original_id.is_some() && json_id.is_some() && original_id == json_id {
+                                                        println!("Item {}: URLs match based on extracted video ID.", item_id);
+                                                        true // IDs match
+                                                    } else {
+                                                        // Fallback to direct string comparison if IDs don't match or couldn't be extracted
+                                                         println!("Item {}: Video IDs don't match or couldn't be extracted. Comparing full URLs.", item_id);
+                                                        j_url == item_original_url
+                                                    }
+                                                },
+                                                None => {
+                                                     println!("Item {}: No URL found in JSON. Cannot compare.", item_id);
+                                                     false // No URL in JSON to compare
+                                                }
+                                            };
+
+                                            if urls_match {
                                                 println!("Item {}: Successfully parsed MATCHING info.json: {}", item_id, json_path_str);
                                                 processed_json = true; // Mark that we parsed the correct JSON
 
@@ -1253,10 +1290,16 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                                     }
                                                 }
                                                 
+                                                // Clean up the processed info.json file
+                                                match fs::remove_file(&path) {
+                                                    Ok(_) => println!("Item {}: Removed processed info.json: {}", item_id, json_path_str),
+                                                    Err(e) => eprintln!("Item {}: Failed to remove processed info.json {}: {}", item_id, json_path_str, e),
+                                                }
+
                                                 break; // Found the matching json, stop searching
                                             } else {
                                                 // URL didn't match, log and continue searching
-                                                println!("Item {}: URL in {} ({:?}) does not match item URL ({}), skipping.", item_id, json_path_str, json_url, item_original_url);
+                                                println!("Item {}: URLs do not match (checked IDs and direct comparison), skipping info.json.", item_id);
                                             }
                                         } else {
                                             eprintln!("Item {}: Error parsing JSON content from {}. Skipping.", item_id, json_path_str);

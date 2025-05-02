@@ -1040,8 +1040,8 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                 println!("Starting yt-dlp download for item: {}...", item_id);
                 
                 // --- yt-dlp Command Construction ---
-                // Use yt-dlp's output template feature for naming
-                let output_template = format!("%(title)s by %(channel)s.%(ext)s"); 
+                // Use a simple, safe output template using the video ID
+                let output_template = format!("%(id)s.%(ext)s"); 
                 let output_path_base = Path::new(&download_dir); // Just the directory
                 // output_path_str will contain the directory and the template string
                 let output_path_str = output_path_base.join(&output_template).to_string_lossy().to_string();
@@ -1057,6 +1057,7 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                 cmd.arg("--progress"); // Request progress updates
                 cmd.arg("--newline"); // Ensure progress updates are on new lines
                 cmd.arg("--no-warnings"); // Reduce noise in output
+                cmd.arg("-v"); // Add verbose flag for detailed debugging output
                 // Consider adding --format bestvideo+bestaudio/best if needed
 
                 cmd.stdout(Stdio::piped()); // Capture standard output
@@ -1101,14 +1102,15 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         });
 
                         // Spawn task to read stderr
+                        let stderr_capture = Arc::new(Mutex::new(String::new()));
+                        let stderr_capture_clone = stderr_capture.clone();
                         tokio::spawn(async move {
-                             let mut err_output = String::new();
-                             while let Ok(Some(line)) = stderr_reader.next_line().await {
-                                 println!("[yt-dlp stderr] {}", line);
-                                 err_output.push_str(&line);
-                                 err_output.push('\n');
-                             }
-                             // TODO: Use err_output if download fails
+                            while let Ok(Some(line)) = stderr_reader.next_line().await {
+                                println!("[yt-dlp stderr] {}", line);
+                                let mut capture = stderr_capture_clone.lock().unwrap();
+                                capture.push_str(&line);
+                                capture.push('\n');
+                            }
                         });
 
                         match child.wait().await {
@@ -1117,7 +1119,12 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                     println!("yt-dlp process finished successfully for item: {}", item_id);
                                     download_success = true;
                                 } else {
-                                    let err_msg = format!("yt-dlp exited with error code: {:?}", status.code());
+                                    let stderr_output = stderr_capture.lock().unwrap().trim().to_string();
+                                    let err_msg = format!(
+                                        "yt-dlp exited with code: {:?}. Stderr: {}",
+                                        status.code(),
+                                        if stderr_output.is_empty() { "None" } else { &stderr_output }
+                                    );
                                     eprintln!("Error for item {}: {}", item_id, err_msg);
                                     // Update DB status directly
                                     {
@@ -1166,110 +1173,113 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         
                         let item_original_url = next_item.url.clone(); // Clone the URL for comparison
 
-                        println!("Download successful for {}. Searching for matching .info.json in dir: {}", item_id, download_dir);
+                        println!("Download successful for item {}. Searching for matching .info.json in dir: {}", item_id, download_dir);
 
                         // Search for the *correct* .info.json file by matching the URL inside
                         if let Ok(entries) = fs::read_dir(&download_dir) {
                             for entry in entries.filter_map(Result::ok) {
                                 let path = entry.path();
                                 // Check if it's a .info.json file
-                                if path.is_file() && path.extension().map_or(false, |ext| ext == "json") && path.file_stem().map_or(false, |stem| stem.to_string_lossy().ends_with(".info")) {
+                                if path.is_file() && 
+                                   path.extension().map_or(false, |ext| ext == "json") && 
+                                   path.file_stem().map_or(false, |stem| stem.to_string_lossy().ends_with(".info")) {
+                                    
                                     let json_path_str = path.to_string_lossy().to_string();
-                                    println!("Found potential info.json: {}", json_path_str);
+                                    println!("Item {}: Found potential info.json: {}", item_id, json_path_str);
                                     
                                     // Read and parse the JSON
                                     if let Ok(json_content) = fs::read_to_string(&path) {
                                         if let Ok(info) = serde_json::from_str::<JsonValue>(&json_content) {
                                             // *** Match URL from JSON with item URL ***
+                                            println!("Item {}: Parsing info.json: {}", item_id, json_path_str);
                                             let json_url = info.get("webpage_url")
                                                           .or_else(|| info.get("original_url")) // Fallback to original_url
                                                           .and_then(|v| v.as_str());
 
+                                            println!("Item {}: Comparing JSON URL '{:?}' with item URL '{}'", item_id, json_url, item_original_url);
                                             if json_url == Some(&item_original_url) {
-                                                println!("Successfully parsed matching info.json: {}", json_path_str);
+                                                println!("Item {}: Successfully parsed MATCHING info.json: {}", item_id, json_path_str);
                                                 processed_json = true; // Mark that we parsed the correct JSON
 
                                                 // Extract common details
                                                 video_title = info.get("title").and_then(|v| v.as_str()).map(String::from);
                                                 thumbnail_url = info.get("thumbnail").and_then(|v| v.as_str()).map(String::from);
                                                 let ext = info.get("ext").and_then(|v| v.as_str());
+                                                println!("Item {}: Extracted from info.json - title='{:?}', thumb='{:?}', ext='{:?}'", item_id, video_title, thumbnail_url, ext);
 
                                                 // Determine the actual video file path (Priority: _filename)
                                                 if let Some(relative_filename) = info.get("_filename").and_then(|v| v.as_str()) {
+                                                    println!("Item {}: Found '_filename' field in info.json: '{}'", item_id, relative_filename);
                                                      let potential_path = Path::new(&download_dir).join(relative_filename);
                                                      if potential_path.exists() {
                                                         actual_video_path = Some(potential_path.to_string_lossy().to_string());
-                                                         println!("Found video path from '_filename' in info.json: {:?}", actual_video_path);
+                                                        println!("Item {}: Confirmed video path from '_filename' exists: {:?}", item_id, actual_video_path);
                                                      } else {
-                                                         println!("Path from '_filename' ('{}') does not exist.", potential_path.display());
+                                                        println!("Item {}: WARNING - Path from '_filename' ('{}') does not exist.", item_id, potential_path.display());
                                                      }
                                                 }
 
                                                 // Construct path from template (Fallback)
                                                 if actual_video_path.is_none() {
-                                                    println!("'_filename' field not found or invalid in info.json. Attempting construction...");
+                                                    println!("Item {}: '_filename' not found/valid in info.json. Attempting path construction...", item_id);
                                                     if let (Some(title), Some(extension)) = (video_title.as_deref(), ext) {
                                                         let channel = info.get("channel").and_then(|v| v.as_str()).unwrap_or("UnknownChannel");
                                                         let base_filename_template = "%(title)s by %(channel)s.%(ext)s";
                                                         let sanitized_title = sanitize_filename(title);
                                                         let sanitized_channel = sanitize_filename(channel);
+                                                        println!("Item {}: Constructing filename with title='{}', channel='{}', ext='{}'", item_id, sanitized_title, sanitized_channel, extension);
                                                         let constructed_filename = base_filename_template
                                                             .replace("%(title)s", &sanitized_title)
                                                             .replace("%(channel)s", &sanitized_channel)
                                                             .replace("%(ext)s", extension);
                                                         let constructed_path = Path::new(&download_dir).join(&constructed_filename);
-                                                        println!("Attempting constructed path: {}", constructed_path.display());
+                                                        println!("Item {}: Attempting constructed path: {}", item_id, constructed_path.display());
                                                         if constructed_path.exists() {
                                                             actual_video_path = Some(constructed_path.to_string_lossy().to_string());
-                                                            println!("Successfully used constructed video path: {:?}", actual_video_path);
+                                                            println!("Item {}: Successfully confirmed constructed video path exists: {:?}", item_id, actual_video_path);
                                                         } else {
-                                                            println!("Warning: Constructed video path does not exist: {}", constructed_path.display());
+                                                            println!("Item {}: WARNING - Constructed video path does not exist: {}", item_id, constructed_path.display());
                                                             let video_path_from_json = json_path_str.replace(".info.json", &format!(".{}", extension));
+                                                            println!("Item {}: Trying path derived from info.json filename: {}", item_id, video_path_from_json);
                                                              if Path::new(&video_path_from_json).exists() {
                                                                 actual_video_path = Some(video_path_from_json);
-                                                                println!("Used video path derived directly from info.json path: {:?}", actual_video_path);
+                                                                println!("Item {}: Successfully used video path derived from info.json path: {:?}", item_id, actual_video_path);
                                                              } else {
-                                                                 println!("Warning: Video path derived from info.json path also doesn't exist: {}", video_path_from_json);
+                                                                println!("Item {}: WARNING - Video path derived from info.json path also doesn't exist: {}", item_id, video_path_from_json);
                                                              }
                                                         }
                                                     } else {
-                                                        println!("Warning: Could not extract title or extension from info.json to construct path.");
+                                                        println!("Item {}: WARNING - Could not extract title or extension from info.json to construct path.", item_id);
                                                     }
                                                 }
                                                 
-                                                // Optionally remove the processed info.json file
-                                                // match fs::remove_file(&path) {
-                                                //     Ok(_) => println!("Removed processed info.json: {}", json_path_str),
-                                                //     Err(e) => eprintln!("Failed to remove processed info.json {}: {}", json_path_str, e),
-                                                // }
-
                                                 break; // Found the matching json, stop searching
                                             } else {
                                                 // URL didn't match, log and continue searching
-                                                println!("URL in {} ({:?}) does not match item URL ({}), skipping.", json_path_str, json_url, item_original_url);
+                                                println!("Item {}: URL in {} ({:?}) does not match item URL ({}), skipping.", item_id, json_path_str, json_url, item_original_url);
                                             }
                                         } else {
-                                            eprintln!("Error parsing JSON content from {}. Skipping.", json_path_str);
+                                            eprintln!("Item {}: Error parsing JSON content from {}. Skipping.", item_id, json_path_str);
                                         }
                                     } else {
-                                        eprintln!("Error reading file content from {}. Skipping.", json_path_str);
+                                        eprintln!("Item {}: Error reading file content from {}. Skipping.", item_id, json_path_str);
                                     }
                                 }
                             } // End of directory iteration
                         }
 
                         if !processed_json {
-                             println!("Warning: Could not find a matching .info.json file for item {}. Cannot determine exact filename.", item_id);
+                             println!("Item {}: WARNING - Could not find a matching .info.json file. Cannot determine exact filename.", item_id);
                         }
                         
                         // --- Update Database with determined info --- 
                         if actual_video_path.is_none() {
-                             println!("CRITICAL WARNING: Final video path could not be determined for item {}. Upload WILL likely fail. Storing template path as fallback.", item_id);
-                             // Fallback: Store the template path, acknowledging it's likely wrong for uploads
-                             actual_video_path = Some(output_path_str.clone()); // This is the source of the error if hit
+                             println!("Item {}: CRITICAL WARNING - Final video path could not be determined. Upload WILL likely fail. Storing template path as fallback.", item_id);
+                             // Storing None instead to make the error more obvious later
+                             actual_video_path = None; 
                         }
 
-                        println!("Updating DB for item {}: status='completed', title='{:?}', path='{:?}', thumb='{:?}'", 
+                        println!("Item {}: Updating DB status='completed', title='{:?}', path='{:?}', thumb='{:?}'", 
                             item_id, video_title, actual_video_path, thumbnail_url);
                         
                         if let Err(e) = (*db_lock_after).update_item_after_download(
@@ -1287,11 +1297,6 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                     } else {
                         // Update status to failed on error (already done within error handling above)
                         // No need to update status again here unless a new error occurred
-                        // if let Err(e) = (*db_lock_after).update_item_status(&item_id, "failed", final_message.clone()) { 
-                        //    eprintln!("Error updating item {} status to failed: {}", item_id, e);
-                        // } else {
-                        //    println!("Item {} status updated to 'failed'.", item_id);
-                        // }
                     }
 
                     // Check for auto-upload (keep this logic)

@@ -1163,10 +1163,12 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         let mut video_title: Option<String> = None;
                         let mut thumbnail_url: Option<String> = None;
                         let mut processed_json = false; // Flag to indicate if we successfully processed a JSON
+                        
+                        let item_original_url = next_item.url.clone(); // Clone the URL for comparison
 
-                        println!("Download successful for {}. Searching for .info.json in dir: {}", item_id, download_dir);
+                        println!("Download successful for {}. Searching for matching .info.json in dir: {}", item_id, download_dir);
 
-                        // Search for *any* .info.json file and try to process it
+                        // Search for the *correct* .info.json file by matching the URL inside
                         if let Ok(entries) = fs::read_dir(&download_dir) {
                             for entry in entries.filter_map(Result::ok) {
                                 let path = entry.path();
@@ -1178,82 +1180,86 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                     // Read and parse the JSON
                                     if let Ok(json_content) = fs::read_to_string(&path) {
                                         if let Ok(info) = serde_json::from_str::<JsonValue>(&json_content) {
-                                            println!("Successfully parsed info.json: {}", json_path_str);
-                                            processed_json = true; // Mark that we parsed a JSON
+                                            // *** Match URL from JSON with item URL ***
+                                            let json_url = info.get("webpage_url")
+                                                          .or_else(|| info.get("original_url")) // Fallback to original_url
+                                                          .and_then(|v| v.as_str());
 
-                                            // Extract common details
-                                            video_title = info.get("title").and_then(|v| v.as_str()).map(String::from);
-                                            thumbnail_url = info.get("thumbnail").and_then(|v| v.as_str()).map(String::from);
-                                            let ext = info.get("ext").and_then(|v| v.as_str());
+                                            if json_url == Some(&item_original_url) {
+                                                println!("Successfully parsed matching info.json: {}", json_path_str);
+                                                processed_json = true; // Mark that we parsed the correct JSON
 
-                                            // *** Determine the actual video file path (Priority: _filename) ***
-                                            
-                                            // 1. Check '_filename' (often relative path used by yt-dlp)
-                                            if let Some(relative_filename) = info.get("_filename").and_then(|v| v.as_str()) {
-                                                 let potential_path = Path::new(&download_dir).join(relative_filename);
-                                                 if potential_path.exists() {
-                                                    actual_video_path = Some(potential_path.to_string_lossy().to_string());
-                                                     println!("Found video path from '_filename' in info.json: {:?}", actual_video_path);
-                                                 } else {
-                                                     println!("Path from '_filename' ('{}') does not exist.", potential_path.display());
-                                                 }
-                                            }
+                                                // Extract common details
+                                                video_title = info.get("title").and_then(|v| v.as_str()).map(String::from);
+                                                thumbnail_url = info.get("thumbnail").and_then(|v| v.as_str()).map(String::from);
+                                                let ext = info.get("ext").and_then(|v| v.as_str());
 
-                                            // *** 2. Construct path from template and JSON data (Fallback) ***
-                                            if actual_video_path.is_none() {
-                                                println!("'_filename' field not found or invalid in info.json. Attempting construction...");
-                                                if let (Some(title), Some(extension)) = (video_title.as_deref(), ext) {
-                                                    let channel = info.get("channel").and_then(|v| v.as_str()).unwrap_or("UnknownChannel");
-                                                    let base_filename_template = "%(title)s by %(channel)s.%(ext)s"; // Our original template
-                                                    
-                                                    // Sanitize parts from JSON before substituting
-                                                    let sanitized_title = sanitize_filename(title);
-                                                    let sanitized_channel = sanitize_filename(channel);
-                                                    
-                                                    let constructed_filename = base_filename_template
-                                                        .replace("%(title)s", &sanitized_title)
-                                                        .replace("%(channel)s", &sanitized_channel)
-                                                        .replace("%(ext)s", extension);
-                                                    
-                                                    let constructed_path = Path::new(&download_dir).join(&constructed_filename);
-                                                    println!("Attempting constructed path: {}", constructed_path.display());
-
-                                                    if constructed_path.exists() {
-                                                        actual_video_path = Some(constructed_path.to_string_lossy().to_string());
-                                                        println!("Successfully used constructed video path: {:?}", actual_video_path);
-                                                    } else {
-                                                        println!("Warning: Constructed video path does not exist: {}", constructed_path.display());
-                                                        // Last resort: Try replacing extension on the info.json path itself
-                                                        let video_path_from_json = json_path_str.replace(".info.json", &format!(".{}", extension));
-                                                         if Path::new(&video_path_from_json).exists() {
-                                                            actual_video_path = Some(video_path_from_json);
-                                                            println!("Used video path derived directly from info.json path: {:?}", actual_video_path);
-                                                         } else {
-                                                             println!("Warning: Video path derived from info.json path also doesn't exist: {}", video_path_from_json);
-                                                         }
-                                                    }
-                                                } else {
-                                                    println!("Warning: Could not extract title or extension from info.json to construct path.");
+                                                // Determine the actual video file path (Priority: _filename)
+                                                if let Some(relative_filename) = info.get("_filename").and_then(|v| v.as_str()) {
+                                                     let potential_path = Path::new(&download_dir).join(relative_filename);
+                                                     if potential_path.exists() {
+                                                        actual_video_path = Some(potential_path.to_string_lossy().to_string());
+                                                         println!("Found video path from '_filename' in info.json: {:?}", actual_video_path);
+                                                     } else {
+                                                         println!("Path from '_filename' ('{}') does not exist.", potential_path.display());
+                                                     }
                                                 }
+
+                                                // Construct path from template (Fallback)
+                                                if actual_video_path.is_none() {
+                                                    println!("'_filename' field not found or invalid in info.json. Attempting construction...");
+                                                    if let (Some(title), Some(extension)) = (video_title.as_deref(), ext) {
+                                                        let channel = info.get("channel").and_then(|v| v.as_str()).unwrap_or("UnknownChannel");
+                                                        let base_filename_template = "%(title)s by %(channel)s.%(ext)s";
+                                                        let sanitized_title = sanitize_filename(title);
+                                                        let sanitized_channel = sanitize_filename(channel);
+                                                        let constructed_filename = base_filename_template
+                                                            .replace("%(title)s", &sanitized_title)
+                                                            .replace("%(channel)s", &sanitized_channel)
+                                                            .replace("%(ext)s", extension);
+                                                        let constructed_path = Path::new(&download_dir).join(&constructed_filename);
+                                                        println!("Attempting constructed path: {}", constructed_path.display());
+                                                        if constructed_path.exists() {
+                                                            actual_video_path = Some(constructed_path.to_string_lossy().to_string());
+                                                            println!("Successfully used constructed video path: {:?}", actual_video_path);
+                                                        } else {
+                                                            println!("Warning: Constructed video path does not exist: {}", constructed_path.display());
+                                                            let video_path_from_json = json_path_str.replace(".info.json", &format!(".{}", extension));
+                                                             if Path::new(&video_path_from_json).exists() {
+                                                                actual_video_path = Some(video_path_from_json);
+                                                                println!("Used video path derived directly from info.json path: {:?}", actual_video_path);
+                                                             } else {
+                                                                 println!("Warning: Video path derived from info.json path also doesn't exist: {}", video_path_from_json);
+                                                             }
+                                                        }
+                                                    } else {
+                                                        println!("Warning: Could not extract title or extension from info.json to construct path.");
+                                                    }
+                                                }
+                                                
+                                                // Optionally remove the processed info.json file
+                                                // match fs::remove_file(&path) {
+                                                //     Ok(_) => println!("Removed processed info.json: {}", json_path_str),
+                                                //     Err(e) => eprintln!("Failed to remove processed info.json {}: {}", json_path_str, e),
+                                                // }
+
+                                                break; // Found the matching json, stop searching
+                                            } else {
+                                                // URL didn't match, log and continue searching
+                                                println!("URL in {} ({:?}) does not match item URL ({}), skipping.", json_path_str, json_url, item_original_url);
                                             }
-                                            
-                                            // Clean up the info.json file? Maybe not automatically.
-                                            // let _ = fs::remove_file(&path); 
-
-                                            break; // Found and processed a json, stop searching
-
                                         } else {
-                                            eprintln!("Error parsing JSON content from {}", json_path_str);
+                                            eprintln!("Error parsing JSON content from {}. Skipping.", json_path_str);
                                         }
                                     } else {
-                                        eprintln!("Error reading file content from {}", json_path_str);
+                                        eprintln!("Error reading file content from {}. Skipping.", json_path_str);
                                     }
                                 }
-                            }
+                            } // End of directory iteration
                         }
 
                         if !processed_json {
-                             println!("Warning: Could not find or process any .info.json file for item {}. Cannot determine exact filename.", item_id);
+                             println!("Warning: Could not find a matching .info.json file for item {}. Cannot determine exact filename.", item_id);
                         }
                         
                         // --- Update Database with determined info --- 

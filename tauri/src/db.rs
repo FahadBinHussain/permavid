@@ -178,16 +178,26 @@ impl Database {
         let id = item.id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
         let now = Utc::now().timestamp_millis();
         
-        // --- ADDED: Check if URL already exists ---
-        let check_query = "SELECT 1 FROM queue WHERE url = ? LIMIT 1";
-        let url_exists: Result<i32, rusqlite::Error> = conn.query_row(check_query, params![&item.url], |row| row.get(0));
+        // --- MODIFIED: Check if URL already exists and get its status ---
+        let check_query = "SELECT status FROM queue WHERE url = ? LIMIT 1";
+        // Query for the status directly
+        let existing_status: Result<String, rusqlite::Error> = conn.query_row(
+            check_query, 
+            params![&item.url], 
+            |row| row.get(0)
+        );
 
-        match url_exists {
-            Ok(_) => {
-                // URL exists, return an error similar to a unique constraint violation
+        match existing_status {
+            Ok(status) => {
+                // URL exists, determine the correct error message based on status
+                let error_message = if status == "encoded" {
+                    format!("URL \'{}\' has already been archived.", item.url)
+                } else {
+                    format!("URL \'{}\' already exists in the active queue (status: {}).", item.url, status)
+                };
                 return Err(rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE), // Use SQLITE_CONSTRAINT_UNIQUE code
-                    Some(format!("URL '{}' already exists in the queue.", item.url)),
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE), // Keep using constraint code
+                    Some(error_message),
                 ));
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -198,7 +208,7 @@ impl Database {
                 return Err(e);
             }
         }
-        // --- END ADDED ---
+        // --- END MODIFIED ---
 
         conn.execute(
             "INSERT INTO queue (id, url, status, message, title, filemoon_url, files_vc_url, encoding_progress, thumbnail_url, added_at, updated_at) 

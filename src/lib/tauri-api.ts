@@ -53,13 +53,13 @@ export async function addQueueItem(item: QueueItem) {
   } catch (err: any) {
     // Convert error to string for checking
     const errorString = String(err);
-    // Check if it's the expected duplicate error
-    if (errorString.includes("already exists in the queue")) {
+    // Check if it's one of the expected duplicate/archived errors
+    if (errorString.includes("already exists in the active queue") || errorString.includes("has already been archived")) {
       // Re-throw only the message string for graceful handling in UI
       throw errorString; 
     } else {
-      // Re-throw other unexpected errors
-      console.error("Error adding queue item via Tauri:", err); // Log unexpected errors here
+      // Re-throw other unexpected errors and log them
+      console.error("Unexpected error adding queue item via Tauri:", err); 
       throw err; 
     }
   }

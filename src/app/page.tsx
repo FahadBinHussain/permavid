@@ -356,10 +356,13 @@ export default function Home() {
       const errorString = String(submitError);
       let finalErrorMessage = 'Failed to add URL. Please check the URL or try again.'; // Default generic message
 
-      // Check the error string for our specific duplicate URL message from Rust
-      if (errorString.includes("already exists in the queue")) {
-        finalErrorMessage = errorString; // Use the specific message
-        // Don't log this expected error to the console
+      // Check the error string for our specific duplicate/archived URL messages from Rust
+      const isAlreadyArchived = errorString.includes("has already been archived");
+      const isAlreadyInQueue = errorString.includes("already exists in the active queue");
+
+      if (isAlreadyArchived || isAlreadyInQueue) {
+        finalErrorMessage = errorString; // Use the specific message from Rust
+        // Don't log these expected errors to the console
       } else {
         // Log unexpected errors to the console for debugging
         console.error('Unexpected submission error object via Tauri:', submitError);

@@ -2,8 +2,6 @@
   "version": 2,
   "buildCommand": "npm run build",
   "functions": {
-    "api/index.js": {
-      "includeFiles": ["prisma/**", "generated/**", ".env"]
-    }
+    "api/index.js": {}
   }
 } 

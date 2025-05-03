@@ -1,10 +1,10 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config(); // Load environment variables
-const { PrismaClient } = require('@prisma/client'); // Updated import path to use the regular way
+const { PrismaClient } = require('@prisma/client'); // Standard import
 const { getCanonicalIdentifier } = require('../utils/canonicalizeUrl'); // Import canonicalization function
 
-// Instantiate Prisma Client with explicit log levels for debugging
+// Create a single PrismaClient instance and reuse it
 const prisma = new PrismaClient({
   log: ['query', 'info', 'warn', 'error'],
 });

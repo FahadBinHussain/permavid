@@ -18,5 +18,10 @@
   "devDependencies": {
     "nodemon": "^3.1.10",
     "prisma": "^6.7.0"
+  },
+  "prisma": {
+    "generate": {
+      "skip": true
+    }
   }
 }

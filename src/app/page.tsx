@@ -319,9 +319,8 @@ export default function Home() {
   const [restartingItemId, setRestartingItemId] = useState<string | null>(null);
   const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
 
-  // --- ADDED: State for public index contribution --- 
+  // Main state for contribution setting (used by useEffects etc.)
   const [isContributionEnabled, setIsContributionEnabled] = useState<boolean>(false);
-  // --- END ADDED --- 
 
   // --- Settings State ---
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -335,20 +334,20 @@ export default function Home() {
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
   const [showSortDropdown, setShowSortDropdown] = useState(false);
 
-  // --- Load contribution setting from localStorage on mount --- 
+  // --- Load/Save contribution setting (localStorage) ---
   useEffect(() => {
     const storedValue = localStorage.getItem('isContributionEnabled');
     if (storedValue !== null) {
       setIsContributionEnabled(storedValue === 'true');
     }
-  }, []); // Empty dependency array means run only once on mount
+  }, []); 
 
-  // --- Save contribution setting --- 
   useEffect(() => {
+    // This now only saves the FINAL state to localStorage
     localStorage.setItem('isContributionEnabled', String(isContributionEnabled));
   }, [isContributionEnabled]);
   
-  // --- Function to contribute existing items (now fetches gallery items) ---
+  // --- Function to contribute existing items (remains the same) ---
   const contributeExistingItems = useCallback(async () => {
     console.log('[Retroactive Sync] Attempting to contribute existing encoded/gallery items...');
     try {
@@ -397,10 +396,9 @@ export default function Home() {
     } catch (error) {
       console.error('[Retroactive Sync] Error fetching gallery items:', error);
     }
-  }, [tauriGetGalleryItems, tauriContributeIdentifier]); // Dependencies: use the gallery fetch fn
-  // --- END MODIFIED ---
-
-  // --- Listen for download complete event --- 
+  }, [tauriGetGalleryItems, tauriContributeIdentifier]);
+  
+  // --- Download complete event listener (remains the same) ---
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -618,22 +616,41 @@ export default function Home() {
     }
   };
   
-  const handleSaveSettings = async (modalLocalSettings: AppSettings) => {
+  // --- MODIFIED: Save Settings Logic ---
+  const handleSaveSettings = async (settingsToSave: AppSettings, contributionEnabledFromModal: boolean) => {
     setIsSavingSettings(true);
     setMessage('');
     setError('');
+    
+    const contributionJustEnabled = contributionEnabledFromModal && !isContributionEnabled;
+    
     try {
-      console.log("Attempting to save settings:", modalLocalSettings);
-      await tauriSaveSettings(modalLocalSettings); 
+      // 1. Save the non-contribution settings via Tauri
+      console.log("Attempting to save non-contribution settings:", settingsToSave);
+      await tauriSaveSettings(settingsToSave); 
+      
+      // 2. Update the main contribution state
+      setIsContributionEnabled(contributionEnabledFromModal);
+      
       setMessage('Settings saved successfully.');
       setShowSettingsModal(false); 
+      
+      // 3. Trigger retroactive sync *after* state update if needed
+      if (contributionJustEnabled) {
+        console.log("Contribution setting was enabled, triggering retroactive sync...");
+        contributeExistingItems();
+      }
+      
     } catch (saveError: any) {
       console.error('Error saving settings:', saveError);
       setError(`Failed to save settings: ${saveError.message || String(saveError)}`);
+      // Reset modal state potentially? Or leave modal open on error?
+      // For now, just log error, modal will close if Tauri call succeeds
     } finally {
       setIsSavingSettings(false);
     }
   };
+  // --- END MODIFIED ---
 
   // Updated handleOpenLink to use Tauri context function
   const handleOpenLink = async (link: string | null | undefined) => {
@@ -682,28 +699,56 @@ export default function Home() {
       }
     });
 
-  // --- Settings Modal Component (Modernized) ---
+  // --- Settings Modal Component (MODIFIED) ---
   const SettingsModal = () => {
+    // Modal-specific state for settings
     const [modalSettings, setModalSettings] = useState<AppSettings>(createEmptySettings());
+    // Modal-specific state for the contribution checkbox
+    const [modalContributionEnabled, setModalContributionEnabled] = useState<boolean>(false);
     const [isLoadingSettings, setIsLoadingSettings] = useState(true); 
 
+    // Load initial values into modal state when modal opens
     useEffect(() => {
       setIsLoadingSettings(true);
       tauriGetAppSettings()
         .then(fetchedSettings => {
           setModalSettings(fetchedSettings || createEmptySettings());
+          // Initialize modal checkbox state from main state
+          setModalContributionEnabled(isContributionEnabled); 
         })
         .catch(err => {
           console.error("Error fetching settings for modal:", err);
+          setModalContributionEnabled(isContributionEnabled); // Ensure it syncs even on error
         })
         .finally(() => {
           setIsLoadingSettings(false);
         });
-    }, []); 
+    }, []); // Run only when modal mounts
 
+    // Handle form submission in the modal
     const handleModalSubmit = (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        handleSaveSettings(modalSettings); 
+        // Prepare settings object (excluding contribution flag, as it's handled separately)
+        const { 
+          filemoon_api_key,
+          files_vc_api_key,
+          download_directory,
+          delete_after_upload,
+          auto_upload,
+          upload_target
+        } = modalSettings;
+        
+        const settingsToSave: AppSettings = {
+          filemoon_api_key,
+          files_vc_api_key,
+          download_directory,
+          delete_after_upload,
+          auto_upload,
+          upload_target
+        };
+        
+        // Call the main save handler, passing both settings and the modal's contribution state
+        handleSaveSettings(settingsToSave, modalContributionEnabled); 
     }
     
     // Helper for input fields
@@ -738,18 +783,9 @@ export default function Home() {
         </div>
     );
 
-    const handleContributionChange = (checked: boolean) => {
-      const previouslyEnabled = isContributionEnabled;
-      setIsContributionEnabled(checked);
-      // If it was just turned ON, trigger the retroactive contribution
-      if (checked && !previouslyEnabled) {
-        contributeExistingItems();
-      }
-    };
-
     return (
-        <div className="fixed inset-0 bg-gray-900 bg-opacity-50 backdrop-blur-sm flex justify-center items-center z-50 p-4"> {/* Added padding */}
-            <div className="bg-white p-6 md:p-8 rounded-lg shadow-xl w-full max-w-lg transform transition-all sm:scale-100"> {/* Added transition */}
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-50 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+            <div className="bg-white p-6 md:p-8 rounded-lg shadow-xl w-full max-w-lg transform transition-all sm:scale-100"> 
                 <h2 className="text-xl font-semibold mb-6 text-gray-800">Application Settings</h2>
                 
                 {isLoadingSettings ? (
@@ -812,25 +848,24 @@ export default function Home() {
                         <p className="mt-1 text-xs text-gray-500">Choose where to upload the files.</p>
                     </div>
 
-                    {/* --- ADDED: Contribution Checkbox --- */}
-                    <div className="mb-6 border-t border-gray-200 pt-4 mt-4"> {/* Add some separation */} 
+                    {/* Contribution Checkbox section */}
+                    <div className="mb-6 border-t border-gray-200 pt-4 mt-4">
                         <p className="block text-sm font-medium text-gray-700 mb-2">Public Index (Optional)</p>
                          {renderCheckbox(
                             "contributeToIndex", 
                             "Contribute successfully downloaded video IDs to the public index", 
-                            isContributionEnabled,
-                            handleContributionChange
+                            modalContributionEnabled, // Use modal state for checked
+                            (checked) => setModalContributionEnabled(checked) // Update modal state on change
                          )}
                          <p className="mt-1 text-xs text-gray-500">
-                           If enabled, the unique identifier (e.g., youtube:VIDEO_ID) of each successfully downloaded video will be sent to a public server. 
-                           This helps create a community index of archived content. Enabling this will also attempt to contribute identifiers from previously processed videos.
-                           <span className="font-semibold">Your identity is NOT sent or stored.</span>
+                            If enabled, the unique identifier (e.g., youtube:VIDEO_ID) of each successfully downloaded video will be sent to a public server. 
+                            This helps create a community index of archived content. Enabling this will also attempt to contribute identifiers from previously processed videos.
+                            <span className="font-semibold">Your identity is NOT sent or stored.</span>
                          </p>
                     </div>
-                    {/* --- END ADDED --- */}
-
-                    {/* Action buttons */}
-                    <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200"> {/* Added border top */}
+                    
+                    {/* Action buttons (submit now triggers handleModalSubmit) */}
+                    <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
                         <button
                             type="button"
                             onClick={() => setShowSettingsModal(false)}

@@ -1,8 +1,11 @@
 {
   "name": "permavid-index-server",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "api/index.js",
   "scripts": {
+    "dev": "nodemon api/index.js",
+    "build": "npx prisma generate",
+    "start": "node api/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

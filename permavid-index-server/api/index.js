@@ -1,10 +1,13 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config(); // Load environment variables
-const { PrismaClient } = require('../prisma/generated/prisma'); // Updated import path
+const { PrismaClient } = require('@prisma/client'); // Updated import path to use the regular way
 const { getCanonicalIdentifier } = require('../utils/canonicalizeUrl'); // Import canonicalization function
 
-const prisma = new PrismaClient(); // Instantiate Prisma Client
+// Instantiate Prisma Client with explicit log levels for debugging
+const prisma = new PrismaClient({
+  log: ['query', 'info', 'warn', 'error'],
+});
 
 const app = express();
 const PORT = process.env.PORT || 3001; // Use environment variable or default
@@ -16,15 +19,6 @@ app.use(express.json()); // Parse JSON bodies
 // Basic route
 app.get('/', (req, res) => {
   res.send('PermaVid Index Server API endpoint is running!');
-});
-
-// Placeholder routes (to be implemented later)
-app.post('/add', (req, res) => {
-  res.status(501).send({ message: 'Not Implemented' });
-});
-
-app.get('/check', (req, res) => {
-  res.status(501).send({ message: 'Not Implemented' });
 });
 
 // --- API Routes ---

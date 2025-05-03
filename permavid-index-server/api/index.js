@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config(); // Load environment variables
-const { PrismaClient } = require('../generated/prisma'); // Import Prisma Client
+const { PrismaClient } = require('../prisma/generated/prisma'); // Updated import path
 const { getCanonicalIdentifier } = require('../utils/canonicalizeUrl'); // Import canonicalization function
 
 const prisma = new PrismaClient(); // Instantiate Prisma Client

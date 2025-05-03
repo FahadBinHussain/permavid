@@ -1367,7 +1367,7 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         } else {
                             println!("Item {} details updated after successful download.", item_id);
                             // --- ADDED: Emit event on successful download & DB update ---
-                            let payload =serde::json::json!({
+                            let payload = serde_json::json!({
                                 "id": item_id,
                                 "originalUrl": item_original_url, // Send original URL
                                 "title": video_title,

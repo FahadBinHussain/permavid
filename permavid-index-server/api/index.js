@@ -15,22 +15,22 @@ app.use(express.json()); // Parse JSON bodies
 
 // Basic route
 app.get('/', (req, res) => {
-  res.send('PermaVid Index Server is running!');
+  res.send('PermaVid Index Server API endpoint is running!');
 });
 
 // Placeholder routes (to be implemented later)
-app.post('/api/add', (req, res) => {
+app.post('/add', (req, res) => {
   res.status(501).send({ message: 'Not Implemented' });
 });
 
-app.get('/api/check', (req, res) => {
+app.get('/check', (req, res) => {
   res.status(501).send({ message: 'Not Implemented' });
 });
 
 // --- API Routes ---
 
-// POST /api/add - Add an identifier
-app.post('/api/add', async (req, res) => {
+// POST /add - Add an identifier
+app.post('/add', async (req, res) => {
   const { url } = req.body;
 
   if (!url) {
@@ -60,8 +60,8 @@ app.post('/api/add', async (req, res) => {
   }
 });
 
-// GET /api/check - Check if an identifier exists
-app.get('/api/check', async (req, res) => {
+// GET /check - Check if an identifier exists
+app.get('/check', async (req, res) => {
   const { url } = req.query;
 
   if (!url) {

@@ -34,6 +34,7 @@ import { open } from '@tauri-apps/api/shell'; // Import open for external links
 import { useTauri } from '@/app/tauri-integration'; // Corrected import path
 import { QueueItem, AppSettings } from '@/lib/tauri-api'; // <-- Import types
 import { createEmptySettings } from '@/lib/settings-helper'; // Import factory function
+import { listen } from '@tauri-apps/api/event'; // <-- Import listen
 
 // --- Updated Icons with consistent size ---
 const iconClass = "h-4 w-4 inline-block mr-1.5 align-text-bottom"; // Consistent icon styling
@@ -281,6 +282,15 @@ const QueueListItem: React.FC<QueueItemProps> = ({
   );
 };
 
+// Define the payload type for the download_complete event
+interface DownloadCompletePayload {
+  id: string;
+  originalUrl: string;
+  title?: string;
+  localPath?: string;
+  thumbnailUrl?: string;
+}
+
 export default function Home() {
   // Use the Tauri context hook
   const {
@@ -295,6 +305,7 @@ export default function Home() {
     cancelItem: tauriCancelItem,
     restartEncoding: tauriRestartEncoding,
     openLink: tauriOpenLink, // Make sure openLink is provided by useTauri
+    contributeIdentifier: tauriContributeIdentifier // <-- Destructure contributeIdentifier
   } = useTauri();
 
   const [url, setUrl] = useState('');
@@ -307,6 +318,10 @@ export default function Home() {
   const [restartingItemId, setRestartingItemId] = useState<string | null>(null);
   const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
 
+  // --- ADDED: State for public index contribution --- 
+  const [isContributionEnabled, setIsContributionEnabled] = useState<boolean>(false);
+  // --- END ADDED --- 
+
   // --- Settings State ---
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
@@ -318,6 +333,68 @@ export default function Home() {
   const [sortKey, setSortKey] = useState<SortKey>('added_at_desc');
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
   const [showSortDropdown, setShowSortDropdown] = useState(false);
+
+  // --- ADDED: Load contribution setting from localStorage on mount --- 
+  useEffect(() => {
+    const storedValue = localStorage.getItem('isContributionEnabled');
+    if (storedValue !== null) {
+      setIsContributionEnabled(storedValue === 'true');
+    }
+  }, []); // Empty dependency array means run only once on mount
+  // --- END ADDED ---
+
+  // --- ADDED: Save contribution setting to localStorage on change --- 
+  useEffect(() => {
+    localStorage.setItem('isContributionEnabled', String(isContributionEnabled));
+  }, [isContributionEnabled]); // Run whenever isContributionEnabled changes
+  // --- END ADDED ---
+
+  // --- ADDED: Listen for download complete event --- 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    const setupListener = async () => {
+      try {
+        unlisten = await listen<DownloadCompletePayload>('download_complete', (event) => {
+          console.log('Received download_complete event:', event.payload);
+          const { originalUrl } = event.payload;
+          
+          // Check the current state value directly
+          if (isContributionEnabled && originalUrl) {
+            console.log(`Contribution enabled. Calling contributeIdentifier for ${originalUrl}`);
+            tauriContributeIdentifier(originalUrl)
+              .then(result => {
+                if (result.success) {
+                  console.log(`Successfully contributed identifier for ${originalUrl}`);
+                } else {
+                  console.warn(`Failed to contribute identifier for ${originalUrl}: ${result.error}`);
+                  // Optionally show a non-blocking notification to the user
+                }
+              })
+              .catch(err => {
+                console.error(`Error during contributeIdentifier call for ${originalUrl}:`, err);
+              });
+          } else {
+            console.log('Contribution not enabled or original URL missing, skipping.');
+          }
+        });
+        console.log('Successfully set up download_complete event listener.');
+      } catch (e) {
+        console.error('Failed to set up download_complete event listener:', e);
+      }
+    };
+
+    setupListener();
+
+    // Cleanup listener on component unmount
+    return () => {
+      if (unlisten) {
+        unlisten();
+        console.log('Cleaned up download_complete event listener.');
+      }
+    };
+  }, [isContributionEnabled, tauriContributeIdentifier]); // <-- Add isContributionEnabled and tauriContributeIdentifier as dependencies
+  // --- END ADDED ---
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -674,6 +751,23 @@ export default function Home() {
                         </select>
                         <p className="mt-1 text-xs text-gray-500">Choose where to upload the files.</p>
                     </div>
+
+                    {/* --- ADDED: Contribution Checkbox --- */}
+                    <div className="mb-6 border-t border-gray-200 pt-4 mt-4"> {/* Add some separation */} 
+                        <p className="block text-sm font-medium text-gray-700 mb-2">Public Index (Optional)</p>
+                         {renderCheckbox(
+                            "contributeToIndex", 
+                            "Contribute successfully downloaded video IDs to the public index", 
+                            isContributionEnabled, 
+                            (checked) => setIsContributionEnabled(checked)
+                         )}
+                         <p className="mt-1 text-xs text-gray-500">
+                           If enabled, the unique identifier (e.g., youtube:VIDEO_ID) of each successfully downloaded video will be sent to a public server. 
+                           This helps create a community index of archived content. 
+                           <span className="font-semibold">Your identity is NOT sent or stored.</span>
+                         </p>
+                    </div>
+                    {/* --- END ADDED --- */}
 
                     {/* Action buttons */}
                     <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200"> {/* Added border top */}

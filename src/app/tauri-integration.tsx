@@ -22,6 +22,7 @@ import {
   getGalleryItems
 } from '@/lib/tauri-api';
 import { createEmptySettings } from '@/lib/settings-helper';
+import { fetch as tauriFetch, Body } from '@tauri-apps/api/http'; // Import Tauri fetch AND Body
 
 // Define context value type
 interface TauriContextType {
@@ -43,6 +44,7 @@ interface TauriContextType {
   cancelItem: (id: string) => Promise<{success: boolean, message: string}>;
   restartEncoding: (id: string) => Promise<{success: boolean, message: string}>;
   getGalleryItems: () => Promise<{success: boolean, message: string, data?: QueueItem[]}>;
+  contributeIdentifier: (url: string) => Promise<{success: boolean, error?: string}>;
 }
 
 // Create context with default values
@@ -64,8 +66,56 @@ const TauriContext = createContext<TauriContextType>({
   triggerUpload: async () => ({success: false, message: 'Provider not ready'}),
   cancelItem: async () => ({success: false, message: 'Provider not ready'}),
   restartEncoding: async () => ({success: false, message: 'Provider not ready'}),
-  getGalleryItems: async () => ({success: false, message: 'Provider not ready', data: []})
+  getGalleryItems: async () => ({success: false, message: 'Provider not ready', data: []}),
+  contributeIdentifier: async () => ({success: false, error: 'Provider not ready'}),
 });
+
+// --- PLACEHOLDER: Replace with your actual Vercel deployment URL --- 
+const PUBLIC_INDEX_SERVER_BASE_URL = 'https://your-permavid-index.vercel.app/api'; 
+// --- END PLACEHOLDER ---
+
+// --- ADDED: API Client function to contribute identifier --- 
+async function contributeIdentifier(url: string): Promise<{success: boolean; error?: string}> {
+  if (!PUBLIC_INDEX_SERVER_BASE_URL || PUBLIC_INDEX_SERVER_BASE_URL.includes('your-permavid-index')) {
+    console.warn('Public index server URL is not configured. Skipping contribution.');
+    return { success: false, error: 'Server URL not configured' };
+  }
+
+  const endpoint = `${PUBLIC_INDEX_SERVER_BASE_URL}/add`;
+  console.log(`Attempting to contribute identifier for URL: ${url} to ${endpoint}`);
+
+  try {
+    const response = await tauriFetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: Body.json({ url }), // Use Body.json()
+      timeout: 15000 // 15 second timeout
+    });
+
+    console.log('Contribution response status:', response.status);
+    console.log('Contribution response data:', response.data);
+
+    if (!response.ok) {
+      // Try to parse error message from response data
+      let errorMessage = `Server responded with status ${response.status}`;
+      if (typeof response.data === 'object' && response.data !== null && (response.data as any).message) {
+        errorMessage = (response.data as any).message;
+      }
+      console.error('Failed to contribute identifier:', errorMessage);
+      return { success: false, error: errorMessage };
+    }
+
+    console.log(`Successfully contributed identifier for: ${url}`);
+    return { success: true };
+
+  } catch (error: any) {
+    console.error('Error calling contribute identifier endpoint:', error);
+    return { success: false, error: error.message || 'Network error or failed to fetch' };
+  }
+}
+// --- END ADDED ---
 
 // Provider component
 export function TauriProvider({ children }: { children: ReactNode }) {
@@ -193,6 +243,11 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     return result;
   }, []);
 
+  const memoizedContributeIdentifier = useCallback(async (url: string) => {
+    if (!isTauriEnvironment) return { success: false, error: 'Not in Tauri environment' };
+    return contributeIdentifier(url);
+  }, [isTauriEnvironment]);
+
   const contextValue = useMemo(() => ({
     isReady,
     isTauriEnvironment,
@@ -211,13 +266,15 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     triggerUpload: handleTriggerUpload,
     cancelItem: handleCancelItem,
     restartEncoding: handleRestartEncoding,
-    getGalleryItems: handleGetGalleryItems
+    getGalleryItems: handleGetGalleryItems,
+    contributeIdentifier: memoizedContributeIdentifier,
   }), [
     isReady, isTauriEnvironment, queueItems,
     fetchQueueItems, addToQueue, updateItem, updateStatus, clearItems,
     getAppSettings, saveAppSettings, openLink, getDefaultDownloadDir,
     handleImportFromFile, handleRetryItem, handleTriggerUpload,
-    handleCancelItem, handleRestartEncoding, handleGetGalleryItems
+    handleCancelItem, handleRestartEncoding, handleGetGalleryItems,
+    memoizedContributeIdentifier
   ]);
 
   return (

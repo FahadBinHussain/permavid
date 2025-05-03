@@ -50,3 +50,4 @@ next-env.d.ts
 # Downloads (already present but good to confirm)
 downloads/
 tauri/target/
+prompt.md

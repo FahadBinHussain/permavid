@@ -1353,17 +1353,31 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         println!("Item {}: Updating DB status='completed', title='{:?}', path='{:?}', thumb='{:?}'", 
                             item_id, video_title, actual_video_path, thumbnail_url);
                         
-                        if let Err(e) = (*db_lock_after).update_item_after_download(
+                        let update_result = (*db_lock_after).update_item_after_download(
                             &item_id,
                             "completed", 
-                            video_title,
-                            actual_video_path,
-                            thumbnail_url,
+                            video_title.clone(), // Clone needed for potential event emission
+                            actual_video_path.clone(), // Clone needed for potential event emission
+                            thumbnail_url.clone(), // Clone needed for potential event emission
                             Some("Download complete".to_string())
-                        ) {
+                        );
+                        
+                        if let Err(e) = update_result {
                             eprintln!("Error updating item {} details after download: {}", item_id, e);
                         } else {
                             println!("Item {} details updated after successful download.", item_id);
+                            // --- ADDED: Emit event on successful download & DB update ---
+                            let payload =serde::json::json!({
+                                "id": item_id,
+                                "originalUrl": item_original_url, // Send original URL
+                                "title": video_title,
+                                "localPath": actual_video_path,
+                                "thumbnailUrl": thumbnail_url
+                            });
+                            if let Err(e) = app_handle.emit_all("download_complete", payload) {
+                                eprintln!("Error emitting download_complete event for {}: {}", item_id, e);
+                            }
+                            // --- END ADDED ---
                         }
                     } else {
                         // Update status to failed on error (already done within error handling above)

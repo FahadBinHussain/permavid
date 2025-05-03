@@ -51,3 +51,6 @@ next-env.d.ts
 downloads/
 tauri/target/
 prompt.md
+
+# Prisma Generated Client (Index Server)
+permavid-index-server/prisma/generated/

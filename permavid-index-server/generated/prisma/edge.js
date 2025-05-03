@@ -134,6 +134,10 @@ const config = {
         "fromEnvVar": null,
         "value": "windows",
         "native": true
+      },
+      {
+        "fromEnvVar": null,
+        "value": "rhel-openssl-3.0.x"
       }
     ],
     "previewFeatures": [],
@@ -141,7 +145,7 @@ const config = {
     "isCustomOutput": true
   },
   "relativeEnvPaths": {
-    "rootEnvPath": "../../.env",
+    "rootEnvPath": null,
     "schemaEnvPath": "../../.env"
   },
   "relativePath": "../../prisma",
@@ -151,16 +155,17 @@ const config = {
     "db"
   ],
   "activeProvider": "postgresql",
+  "postinstall": false,
   "inlineDatasources": {
     "db": {
       "url": {
         "fromEnvVar": "DATABASE_URL",
-        "value": "postgresql://neondb_owner:npg_kUcFV51saqyn@ep-yellow-union-a1q6yjj0-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+        "value": null
       }
     }
   },
-  "inlineSchema": "// This is your Prisma schema file,\n// learn more about it in the docs: https://pris.ly/d/prisma-schema\n\n// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?\n// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init\n\ngenerator client {\n  provider = \"prisma-client-js\"\n  output   = \"../generated/prisma\"\n}\n\ndatasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\n// Add the model definition below\nmodel ArchivedIdentifier {\n  id                  String   @id @default(cuid())\n  canonicalIdentifier String   @unique @db.VarChar(255) // Identifier is unique\n  createdAt           DateTime @default(now())\n}\n",
-  "inlineSchemaHash": "08677ed9244f74efe51418b02c2f53a23d1edb8a58e562d5804e6a2dbacfff10",
+  "inlineSchema": "// This is your Prisma schema file,\n// learn more about it in the docs: https://pris.ly/d/prisma-schema\n\n// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?\n// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init\n\ngenerator client {\n  provider      = \"prisma-client-js\"\n  output        = \"../generated/prisma\"\n  binaryTargets = [\"native\", \"rhel-openssl-3.0.x\"] // Add binary target for Vercel\n}\n\ndatasource db {\n  provider = \"postgresql\"\n  url      = env(\"DATABASE_URL\")\n}\n\n// Add the model definition below\nmodel ArchivedIdentifier {\n  id                  String   @id @default(cuid())\n  canonicalIdentifier String   @unique @db.VarChar(255) // Identifier is unique\n  createdAt           DateTime @default(now())\n}\n",
+  "inlineSchemaHash": "478a62e1b8beaa2e966325db250c4ffcb971b34cf2336bbba517f6aec4d35671",
   "copyEngine": true
 }
 config.dirname = '/'

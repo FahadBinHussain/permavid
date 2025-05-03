@@ -295,7 +295,7 @@ export default function Home() {
   // Use the Tauri context hook
   const {
     queueItems: contextQueue,
-    fetchQueueItems: tauriFetchQueue,
+    fetchQueueItems: tauriFetchQueueItems,
     getAppSettings: tauriGetAppSettings,
     addToQueue: tauriAddToQueue,
     clearItems: tauriClearItems,
@@ -304,8 +304,9 @@ export default function Home() {
     triggerUpload: tauriTriggerUpload,
     cancelItem: tauriCancelItem,
     restartEncoding: tauriRestartEncoding,
-    openLink: tauriOpenLink, // Make sure openLink is provided by useTauri
-    contributeIdentifier: tauriContributeIdentifier // <-- Destructure contributeIdentifier
+    openLink: tauriOpenLink,
+    getGalleryItems: tauriGetGalleryItems,
+    contributeIdentifier: tauriContributeIdentifier
   } = useTauri();
 
   const [url, setUrl] = useState('');
@@ -334,22 +335,72 @@ export default function Home() {
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
   const [showSortDropdown, setShowSortDropdown] = useState(false);
 
-  // --- ADDED: Load contribution setting from localStorage on mount --- 
+  // --- Load contribution setting from localStorage on mount --- 
   useEffect(() => {
     const storedValue = localStorage.getItem('isContributionEnabled');
     if (storedValue !== null) {
       setIsContributionEnabled(storedValue === 'true');
     }
   }, []); // Empty dependency array means run only once on mount
-  // --- END ADDED ---
 
-  // --- ADDED: Save contribution setting to localStorage on change --- 
+  // --- Save contribution setting --- 
   useEffect(() => {
     localStorage.setItem('isContributionEnabled', String(isContributionEnabled));
-  }, [isContributionEnabled]); // Run whenever isContributionEnabled changes
-  // --- END ADDED ---
+  }, [isContributionEnabled]);
+  
+  // --- Function to contribute existing items (now fetches gallery items) ---
+  const contributeExistingItems = useCallback(async () => {
+    console.log('[Retroactive Sync] Attempting to contribute existing encoded/gallery items...');
+    try {
+      // Fetch the gallery items directly
+      const result = await tauriGetGalleryItems();
+      
+      if (!result.success || !result.data) {
+        console.error('[Retroactive Sync] Failed to fetch gallery items:', result.message);
+        return; // Exit if fetch failed
+      }
+      
+      const encodedItems = result.data; // Use the gallery items directly
+      
+      console.log(`[Retroactive Sync] Fetched ${encodedItems.length} gallery items.`);
 
-  // --- ADDED: Listen for download complete event --- 
+      if (encodedItems.length > 0) {
+        console.log(`[Retroactive Sync] Found ${encodedItems.length} encoded items. Attempting contribution...`);
+        const contributionPromises = encodedItems.map(item => {
+          if (item.url) {
+            console.log(`[Retroactive Sync] Preparing contribution for: ${item.url}`);
+            return tauriContributeIdentifier(item.url).then(result => ({ url: item.url, ...result }));
+          } else {
+            console.warn(`[Retroactive Sync] Skipping item ${item.id} due to missing URL.`);
+            return Promise.resolve({ url: item.id || 'unknown', success: false, error: 'Missing URL' });
+          }
+        });
+
+        const results = await Promise.allSettled(contributionPromises);
+        results.forEach((result, index) => {
+          const item = encodedItems[index];
+          if (result.status === 'fulfilled') {
+            const data = result.value;
+            if (data.success) {
+              console.log(`[Retroactive Sync] Successfully contributed: ${data.url}`);
+            } else {
+              console.warn(`[Retroactive Sync] Failed contribution for ${data.url} (ID: ${item.id}): ${data.error}`);
+            }
+          } else {
+            console.error(`[Retroactive Sync] Error calling API for ${item.url} (ID: ${item.id}):`, result.reason);
+          }
+        });
+        console.log('[Retroactive Sync] Finished contribution attempt.');
+      } else {
+        console.log('[Retroactive Sync] No existing encoded items found in gallery to contribute.');
+      }
+    } catch (error) {
+      console.error('[Retroactive Sync] Error fetching gallery items:', error);
+    }
+  }, [tauriGetGalleryItems, tauriContributeIdentifier]); // Dependencies: use the gallery fetch fn
+  // --- END MODIFIED ---
+
+  // --- Listen for download complete event --- 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -399,11 +450,11 @@ export default function Home() {
   const fetchQueue = useCallback(async () => {
     try {
       // console.log('Home: Fetching queue via Tauri...'); // Keep for now
-      await tauriFetchQueue(); 
+      await tauriFetchQueueItems(); 
     } catch (fetchError: any) {
       console.error('Home: Error fetching queue via Tauri context:', fetchError);
     }
-  }, [tauriFetchQueue]);
+  }, [tauriFetchQueueItems]);
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -687,6 +738,15 @@ export default function Home() {
         </div>
     );
 
+    const handleContributionChange = (checked: boolean) => {
+      const previouslyEnabled = isContributionEnabled;
+      setIsContributionEnabled(checked);
+      // If it was just turned ON, trigger the retroactive contribution
+      if (checked && !previouslyEnabled) {
+        contributeExistingItems();
+      }
+    };
+
     return (
         <div className="fixed inset-0 bg-gray-900 bg-opacity-50 backdrop-blur-sm flex justify-center items-center z-50 p-4"> {/* Added padding */}
             <div className="bg-white p-6 md:p-8 rounded-lg shadow-xl w-full max-w-lg transform transition-all sm:scale-100"> {/* Added transition */}
@@ -758,12 +818,12 @@ export default function Home() {
                          {renderCheckbox(
                             "contributeToIndex", 
                             "Contribute successfully downloaded video IDs to the public index", 
-                            isContributionEnabled, 
-                            (checked) => setIsContributionEnabled(checked)
+                            isContributionEnabled,
+                            handleContributionChange
                          )}
                          <p className="mt-1 text-xs text-gray-500">
                            If enabled, the unique identifier (e.g., youtube:VIDEO_ID) of each successfully downloaded video will be sent to a public server. 
-                           This helps create a community index of archived content. 
+                           This helps create a community index of archived content. Enabling this will also attempt to contribute identifiers from previously processed videos.
                            <span className="font-semibold">Your identity is NOT sent or stored.</span>
                          </p>
                     </div>

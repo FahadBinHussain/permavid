@@ -71,7 +71,7 @@ const TauriContext = createContext<TauriContextType>({
 });
 
 // --- PLACEHOLDER: Replace with your actual Vercel deployment URL --- 
-const PUBLIC_INDEX_SERVER_BASE_URL = 'https://your-permavid-index.vercel.app/api'; 
+const PUBLIC_INDEX_SERVER_BASE_URL = 'https://permavid.vercel.app/api'; 
 // --- END PLACEHOLDER ---
 
 // --- ADDED: API Client function to contribute identifier --- 

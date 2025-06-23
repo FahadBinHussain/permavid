@@ -1,6 +1,3 @@
-[submodule "external/files.vc-Uploader"]
-	path = external/files.vc-Uploader
-	url = https://github.com/FahadBinHussain/files.vc-Uploader.git
 [submodule "external/filesvc-uploader"]
 	path = external/filesvc-uploader
 	url = https://github.com/FahadBinHussain/files.vc-Uploader.git

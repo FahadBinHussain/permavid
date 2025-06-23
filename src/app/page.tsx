@@ -801,13 +801,10 @@ export default function Home() {
                       modalSettings.filemoon_api_key, 
                       (val) => setModalSettings(prev => ({ ...prev, filemoon_api_key: val }))
                     )}
-                    {renderInput(
-                      "filesVcApiKey", 
-                      "Files.vc API Key", 
-                      "Enter your Files.vc API Key", 
-                      modalSettings.files_vc_api_key, 
-                      (val) => setModalSettings(prev => ({ ...prev, files_vc_api_key: val }))
-                    )}
+                    {/* Files.vc API input removed as requested */}
+                    <div className="mb-2 p-2 bg-gray-50 border border-gray-200 rounded text-sm text-gray-700">
+                      Files.vc integration is temporarily disabled in this version.
+                    </div>
                     {renderInput(
                       "downloadDir", 
                       "Download Directory", 
@@ -837,15 +834,14 @@ export default function Home() {
                         <label htmlFor="uploadTarget" className="block text-sm font-medium text-gray-700 mb-1">Upload Target</label>
                         <select
                             id="uploadTarget"
-                            value={modalSettings.upload_target || 'filemoon'}
-                            onChange={(e) => setModalSettings(prev => ({ ...prev, upload_target: e.target.value as 'filemoon' | 'files_vc' | 'both' }))}
-                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md text-gray-900" // Ensure text color
+                            value="filemoon"
+                            onChange={(e) => setModalSettings(prev => ({ ...prev, upload_target: 'filemoon' }))}
+                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md text-gray-900 bg-gray-100" // Slightly grayed out to show it's disabled
+                            disabled={true}
                         >
                             <option value="filemoon">Filemoon Only</option>
-                            <option value="files_vc">Files.vc Only</option>
-                            <option value="both">Both (Filemoon first, then Files.vc on fail)</option>
                         </select>
-                        <p className="mt-1 text-xs text-gray-500">Choose where to upload the files.</p>
+                        <p className="mt-1 text-xs text-gray-500">Currently only Filemoon uploads are supported.</p>
                     </div>
 
                     {/* Contribution Checkbox section */}

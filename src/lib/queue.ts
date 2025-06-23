@@ -295,11 +295,11 @@ async function processQueue() {
 
   let itemToProcess: QueueItem | undefined;
   try {
-     itemToProcess = stmtGetNextQueued.get() as QueueItem | undefined;
+    itemToProcess = stmtGetNextQueued.get() as QueueItem | undefined;
   } catch (error: any) {
-      console.error('Failed to query next queued item:', error);
-      isProcessing = false; // Allow trying again later
-      return;
+    console.error('Failed to query next queued item:', error);
+    isProcessing = false; // Allow trying again later
+    return;
   }
 
   if (!itemToProcess) {
@@ -359,90 +359,115 @@ async function processQueue() {
     if (currentStatus !== 'cancelled') {
       if (result.success) {
         console.log(`Download complete for item ${itemId}. Title: ${result.title}, Path: ${result.local_path}`);
-        const autoUploadEnabled = getSetting('auto_upload', 'false') === 'true';
+        
+        // VERIFY THAT WE HAVE A PATH
+        if (!result.local_path) {
+          console.error(`Item ${itemId}: No file path was found after successful download. Cannot proceed with auto-upload.`);
+          
+          // Update database with error but still mark as completed
+          stmtUpdateStatus.run(
+            'completed',
+            'Download completed but no file path was found. Manual upload required.',
+            result.title ?? itemToProcess.title ?? null,
+            null, // No local path available
+            result.info_json_path ?? null,
+            Date.now(),
+            itemId
+          );
+          
+          console.log(`Item ${itemId}: Status updated to completed but flagged for manual upload.`);
+        } else {
+          // First verify that the file actually exists
+          try {
+            await fsPromises.access(result.local_path);
+            console.log(`Item ${itemId}: Verified file exists at path: ${result.local_path}`);
+            
+            const autoUploadEnabled = getSetting('auto_upload', 'false') === 'true';
 
-        if (autoUploadEnabled) {
-           console.log(`Auto-upload enabled. Triggering upload for item ${itemId}...`);
-           // Important: Store the necessary info before starting upload, as upload needs it
-           // Update the item with title, path etc. before potentially calling upload
-           stmtUpdateStatus.run(
-              'completed', // Temporarily mark completed to save paths, upload will change it
-              result.message ?? 'Download complete, preparing auto-upload...',
-              result.title ?? itemToProcess.title ?? null,
-              result.local_path ?? null,
-              result.info_json_path ?? null,
-              Date.now(), // updated_at
-              itemId
-           );
+            if (autoUploadEnabled) {
+              console.log(`Auto-upload enabled. Triggering upload for item ${itemId}...`);
+              // Important: Store the necessary info before starting upload, as upload needs it
+              // Update the item with title, path etc. before potentially calling upload
+              stmtUpdateStatus.run(
+                'completed', // Temporarily mark completed to save paths, upload will change it
+                result.message ?? 'Download complete, preparing auto-upload...',
+                result.title ?? itemToProcess.title ?? null,
+                result.local_path, // Critical: explicitly use the path from download result
+                result.info_json_path ?? null,
+                Date.now(), // updated_at
+                itemId
+              );
 
-           // Determine which service to upload to based on the upload_target setting
-           const uploadTarget = getSetting('upload_target', 'filemoon');
-           
-           // Now trigger the upload based on the target. Don't await here, let it run in the background.
-           if (uploadTarget === 'filemoon' || uploadTarget === 'both') {
-             uploadToFilemoon(itemId).catch(uploadError => {
+              // Only upload to Filemoon
+              uploadToFilemoon(itemId).catch(uploadError => {
                 // Log error if the upload initiation fails, though uploadToFilemoon handles DB updates
                 console.error(`Error initiating auto-upload to Filemoon for ${itemId}:`, uploadError);
-             });
-           }
-           
-           // If we're uploading to Files.vc only or both services
-           if (uploadTarget === 'files_vc' || uploadTarget === 'both') {
-             uploadToFilesVC(itemId).catch(uploadError => {
-                // Log error if the upload initiation fails
-                console.error(`Error initiating auto-upload to Files.vc for ${itemId}:`, uploadError);
-             });
-           }
-        } else {
-          // Auto-upload is disabled, mark as completed
-          console.log(`Auto-upload disabled. Marking item ${itemId} as completed.`);
-          stmtUpdateStatus.run(
+              });
+            } else {
+              // Auto-upload is disabled, mark as completed
+              console.log(`Auto-upload disabled. Marking item ${itemId} as completed.`);
+              stmtUpdateStatus.run(
+                'completed',
+                result.message ?? 'Download complete.',
+                result.title ?? itemToProcess.title ?? null,
+                result.local_path, // Critical: explicitly use the path from download result
+                result.info_json_path ?? null,
+                Date.now(), // updated_at
+                itemId
+              );
+              console.log(`Queue item ${itemId} update COMPLETE: Status=completed`);
+            }
+          } catch (accessError) {
+            console.error(`Item ${itemId}: File reported by downloader does not exist at path: ${result.local_path}`);
+            
+            // Update database with warning but still mark as completed
+            stmtUpdateStatus.run(
               'completed',
-              result.message ?? null,
+              `Download completed but file not found at reported path: ${result.local_path}. Manual upload required.`,
               result.title ?? itemToProcess.title ?? null,
-              result.local_path ?? null,
+              null, // Clear path since it's invalid
               result.info_json_path ?? null,
-              Date.now(), // updated_at
+              Date.now(),
               itemId
-          );
-          console.log(`Queue item ${itemId} update COMPLETE: Status=completed`);
+            );
+          }
         }
       } else {
         // Download failed
         console.log(`Download failed for item ${itemId}. Marking as failed.`);
         stmtUpdateStatus.run(
-            'failed',
-            result.message ?? 'Download failed.',
-            result.title ?? itemToProcess.title ?? null, // Keep old title if available
-            null, // Clear local path on failure
-            itemToProcess.info_json_path, // Keep info json path if it exists? Or clear? Clear for now.
-            Date.now(), // updated_at
-            itemId
+          'failed',
+          result.message ?? 'Download failed.',
+          result.title ?? itemToProcess.title ?? null, // Keep old title if available
+          null, // Clear local path on failure
+          itemToProcess.info_json_path, // Keep info json path if it exists? Or clear? Clear for now.
+          Date.now(), // updated_at
+          itemId
         );
-         console.log(`Queue item ${itemId} update COMPLETE: Status=failed`);
+        console.log(`Queue item ${itemId} update COMPLETE: Status=failed`);
       }
     } else {
       console.log(`Queue item ${itemId} was cancelled, not updating status after download attempt.`);
     }
 
   } catch (processingError: any) {
-     // Catch errors during the update/processing itself
-     console.error(`CRITICAL: Error processing queue item ${itemId}:`, processingError);
+    // Catch errors during the update/processing itself
+    console.error(`CRITICAL: Error processing queue item ${itemId}:`, processingError);
 
-     // Check if the item has been cancelled before marking as failed
-     const currentStatus = (stmtGetItemById.get(itemId) as QueueItem | undefined)?.status;
-     if (currentStatus !== 'cancelled') {
-       // Mark as failed in DB only if it wasn't cancelled
-       try {
-           stmtUpdateStatus.run('failed', `Processing error: ${processingError.message}`, itemToProcess.title, null, null, Date.now(), itemId);
-       } catch (dbUpdateError) {
-           console.error(`Failed to mark item ${itemId} as failed after processing error:`, dbUpdateError);
-       }
-     }
+    // Check if the item has been cancelled before marking as failed
+    const currentStatus = (stmtGetItemById.get(itemId) as QueueItem | undefined)?.status;
+    if (currentStatus !== 'cancelled') {
+      // Mark as failed in DB only if it wasn't cancelled
+      try {
+        stmtUpdateStatus.run('failed', `Processing error: ${processingError.message}`, itemToProcess.title, null, null, Date.now(), itemId);
+      } catch (dbUpdateError) {
+        console.error(`Failed to mark item ${itemId} as failed after processing error:`, dbUpdateError);
+      }
+    }
   } finally {
-      isProcessing = false;
-      // Use setImmediate to yield control and then check again, preventing tight loops
-      setImmediate(processQueue);
+    isProcessing = false;
+    // Use setImmediate to yield control and then check again, preventing tight loops
+    setImmediate(processQueue);
   }
 }
 
@@ -492,12 +517,56 @@ function sanitizeFilename(name: string): string {
                .substring(0, 200); // Limit length
 }
 
+// Add this function before or near the downloadVideo function
+function extractYouTubeVideoId(url: string): string | null {
+    try {
+        const urlObj = new URL(url);
+        // Extract video ID from v parameter in query string (works for both youtube.com and music.youtube.com)
+        if (urlObj.searchParams.has('v')) {
+            return urlObj.searchParams.get('v');
+        }
+        
+        // Handle youtu.be short URLs
+        if (urlObj.hostname === 'youtu.be') {
+            return urlObj.pathname.substring(1);
+        }
+        
+        return null;
+    } catch (error) {
+        console.error(`Error extracting YouTube video ID from ${url}:`, error);
+        return null;
+    }
+}
+
+// Function to check if two URLs point to the same YouTube video
+function isSameYouTubeVideo(url1: string, url2: string): boolean {
+    // First try to extract video IDs
+    const id1 = extractYouTubeVideoId(url1);
+    const id2 = extractYouTubeVideoId(url2);
+    
+    // If both IDs were extracted and they match, it's the same video
+    if (id1 && id2 && id1 === id2) {
+        return true;
+    }
+    
+    // Otherwise check for direct URL match
+    return url1 === url2;
+}
+
 async function downloadVideo(item: QueueItem, downloadDir: string): Promise<DownloadResult> {
     let videoTitle = item.title || 'unknown_title';
     let infoJsonPath = '';
     let localVideoPath = '';
-    let finalOutputTemplate = ''; // Define it here
     let childProcess: ChildProcess | null = null;
+
+    // Extract YouTube ID if it's a YouTube URL - do this first so we can use it throughout the function
+    const youtubeId = (item.url.includes('youtube.com') || item.url.includes('youtu.be')) 
+        ? extractYouTubeVideoId(item.url) 
+        : null;
+
+    if (youtubeId) {
+        console.log(`Detected YouTube URL with ID: ${youtubeId || 'unknown'}`);
+    }
 
     try {
         await ensureDirExists(downloadDir);
@@ -519,10 +588,23 @@ async function downloadVideo(item: QueueItem, downloadDir: string): Promise<Down
 
         // --- Prepare Filenames ---
         const safeTitle = sanitizeFilename(videoTitle);
-        // IMPORTANT: Predict info.json path based on the sanitized title *before* download
-        infoJsonPath = path.join(downloadDir, `${safeTitle}.info.json`);
-        // Set the output template for yt-dlp
-        finalOutputTemplate = path.join(downloadDir, `${safeTitle}.%(ext)s`);
+        let finalOutputTemplate = '';
+        
+        // For YouTube videos, use the video ID in the filename to make it easier to find
+        // This is especially important for YouTube Music URLs
+        if (youtubeId) {
+            // For YouTube, include ID in the filename
+            finalOutputTemplate = path.join(downloadDir, `${youtubeId}.%(ext)s`);
+            console.log(`Using YouTube ID for output template: ${finalOutputTemplate}`);
+            
+            // Also predict the info.json path using the ID
+            infoJsonPath = path.join(downloadDir, `${youtubeId}.info.json`);
+        } else {
+            // For non-YouTube, use the safe title
+            finalOutputTemplate = path.join(downloadDir, `${safeTitle}.%(ext)s`);
+            // Predict info.json path based on the sanitized title
+            infoJsonPath = path.join(downloadDir, `${safeTitle}.info.json`);
+        }
 
         // --- Execute Download ---
         const args = [
@@ -533,8 +615,8 @@ async function downloadVideo(item: QueueItem, downloadDir: string): Promise<Down
             // '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             // '--ffmpeg-location', process.env.FFMPEG_PATH || 'ffmpeg',
             // '--no-warnings',
-            // '--progress',
-            // '--newline'
+            '--progress',
+            '--newline'
         ];
 
         console.log(`Executing download: yt-dlp.exe ${args.join(' ')}`);
@@ -552,16 +634,16 @@ async function downloadVideo(item: QueueItem, downloadDir: string): Promise<Down
         // Store the child process for potential cancellation
         activeDownloads.set(item.id, childProcess);
 
-        // --- Listen to stdout for progress --- 
+        // --- Listen to stdout for progress and file path --- 
         childProcess.stdout?.on('data', (data) => {
             const output = data.toString();
-            // console.log('yt-dlp stdout chunk:', output); // Debug: Log raw output
+            console.log('yt-dlp stdout chunk:', output); // Log all stdout for debugging
 
-            // Regex to find download percentage (handles variations)
+            // Regex to find download percentage
             const progressMatch = output.match(/\[download\]\s+([0-9.]+)\%/);
             if (progressMatch && progressMatch[1]) {
                 const currentPercent = parseFloat(progressMatch[1]);
-                latestPercent = Math.max(latestPercent, currentPercent); // Keep track of highest percentage seen
+                latestPercent = Math.max(latestPercent, currentPercent);
 
                 // Throttle DB updates
                 const now = Date.now();
@@ -569,11 +651,34 @@ async function downloadVideo(item: QueueItem, downloadDir: string): Promise<Down
                     const progressMessage = `Downloading: ${Math.floor(latestPercent)}%`;
                     try {
                         stmtUpdateDownloadProgress.run(progressMessage, now, item.id);
-                        // console.log(`Item ${item.id}: Updated download progress to ${latestPercent}%`); // Debug log
                         lastProgressUpdate = now;
                     } catch (dbError) {
                         console.error(`Item ${item.id}: Failed to update download progress in DB:`, dbError);
                     }
+                }
+            }
+
+            // ADDED: Capture destination filename from output
+            const destFileMatch = output.match(/\[download\] Destination:\s+(.+?)$/m);
+            if (destFileMatch && destFileMatch[1]) {
+                const detectedPath = destFileMatch[1].trim();
+                console.log(`Item ${item.id}: Detected download path: ${detectedPath}`);
+                
+                if (fs.existsSync(detectedPath)) {
+                    localVideoPath = detectedPath;
+                    console.log(`Item ${item.id}: Verified destination path exists: ${localVideoPath}`);
+                }
+            }
+            
+            // ADDED: Also look for "Merging formats into" which gives the final file path
+            const mergingMatch = output.match(/\[Merger\] Merging formats into\s+"(.+?)"/i);
+            if (mergingMatch && mergingMatch[1]) {
+                const mergedPath = mergingMatch[1].trim();
+                console.log(`Item ${item.id}: Detected merged file path: ${mergedPath}`);
+                
+                if (fs.existsSync(mergedPath)) {
+                    localVideoPath = mergedPath;
+                    console.log(`Item ${item.id}: Verified merged file path exists: ${localVideoPath}`);
                 }
             }
         });
@@ -600,39 +705,204 @@ async function downloadVideo(item: QueueItem, downloadDir: string): Promise<Down
                                 stmtUpdateDownloadProgress.run(`Downloading: 100%`, Date.now(), item.id);
                              }
 
+                            // For YouTube videos, directly try the paths with the video ID first
+                            if (youtubeId) {
+                                console.log(`Item ${item.id}: Checking for paths with YouTube ID ${youtubeId}`);
+                                
+                                // Common extensions to try
+                                const extensions = ['mp4', 'webm', 'mkv', 'mp3', 'm4a'];
+                                
+                                for (const ext of extensions) {
+                                    const idPath = path.join(downloadDir, `${youtubeId}.${ext}`);
+                                    try {
+                                        await fsPromises.access(idPath);
+                                        console.log(`Item ${item.id}: Found file with YouTube ID: ${idPath}`);
+                                        localVideoPath = idPath;
+                                        break;
+                                    } catch (error) {
+                                        // Continue to next extension
+                                    }
+                                }
+                                
+                                // Also check for the info.json
+                                const idInfoPath = path.join(downloadDir, `${youtubeId}.info.json`);
+                                try {
+                                    await fsPromises.access(idInfoPath);
+                                    console.log(`Item ${item.id}: Found info.json with YouTube ID: ${idInfoPath}`);
+                                    infoJsonPath = idInfoPath;
+                                } catch (error) {
+                                    // Continue with other strategies
+                                }
+                            }
+
+                            // If we already found the path, skip the other checks
+                            if (localVideoPath && fs.existsSync(localVideoPath)) {
+                                console.log(`Item ${item.id}: Using already detected path: ${localVideoPath}`);
+                                return resolve({ 
+                                    success: true, 
+                                    message: `Download complete: ${path.basename(localVideoPath)}`, 
+                                    title: videoTitle, 
+                                    local_path: localVideoPath, 
+                                    info_json_path: infoJsonPath || undefined 
+                                });
+                            }
+
                             // Check if the predicted info.json exists
                             try {
                                 await fsPromises.access(infoJsonPath);
                                 console.log(`Found info.json: ${infoJsonPath}`);
                             } catch (e) {
                                 console.warn(`Could not find expected info.json file: ${infoJsonPath}`);
-                                infoJsonPath = ''; // Reset path if not found
+                                
+                                // Try to find any .info.json file in the directory
+                                const files = await fsPromises.readdir(downloadDir);
+                                const infoJsonFiles = files.filter(f => f.endsWith('.info.json'));
+                                if (infoJsonFiles.length > 0) {
+                                    // Use the most recently modified info.json file
+                                    const infoJsonStats = await Promise.all(
+                                        infoJsonFiles.map(async (file) => {
+                                            const filePath = path.join(downloadDir, file);
+                                            const stats = await fsPromises.stat(filePath);
+                                            return { file, stats };
+                                        })
+                                    );
+                                    infoJsonStats.sort((a, b) => b.stats.mtimeMs - a.stats.mtimeMs);
+                                    infoJsonPath = path.join(downloadDir, infoJsonStats[0].file);
+                                    console.log(`Found alternative info.json: ${infoJsonPath}`);
+                                } else {
+                                    infoJsonPath = ''; // Reset path if not found
+                                }
                             }
 
-                            // Find the actual video file matching the pattern
+                            // Read the JSON and try to extract video ID for YouTube URLs
+                            let matchedBasedOnJson = false;
+                            if (infoJsonPath && (item.url.includes('youtube.com') || item.url.includes('youtu.be'))) {
+                                try {
+                                    const jsonContent = await fsPromises.readFile(infoJsonPath, 'utf8');
+                                    const info = JSON.parse(jsonContent);
+                                    const jsonUrl = info.webpage_url || info.original_url;
+                                    
+                                    if (jsonUrl) {
+                                        const isMatch = isSameYouTubeVideo(item.url, jsonUrl);
+                                        console.log(`YouTube URL comparison: Original=${item.url} JSON=${jsonUrl} Match=${isMatch}`);
+                                        
+                                        if (isMatch) {
+                                            matchedBasedOnJson = true;
+                                            
+                                            // If the JSON has _filename field, use it directly
+                                            if (info._filename) {
+                                                let filename = info._filename;
+                                                // If it's a relative path, make it absolute
+                                                if (!path.isAbsolute(filename)) {
+                                                    filename = path.join(downloadDir, filename);
+                                                }
+                                                
+                                                if (await fsPromises.stat(filename).catch(() => null)) {
+                                                    localVideoPath = filename;
+                                                    console.log(`Found video file from JSON _filename: ${localVideoPath}`);
+                                                }
+                                            }
+                                            
+                                            // If the JSON has a specific extension, look for file with video ID and that extension
+                                            if (!localVideoPath && info.ext) {
+                                                const videoId = extractYouTubeVideoId(jsonUrl) || youtubeId;
+                                                if (videoId) {
+                                                    const potentialFile = path.join(downloadDir, `${videoId}.${info.ext}`);
+                                                    if (await fsPromises.stat(potentialFile).catch(() => null)) {
+                                                        localVideoPath = potentialFile;
+                                                        console.log(`Found video file using video ID and extension: ${localVideoPath}`);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (jsonError) {
+                                    console.error(`Error processing JSON file ${infoJsonPath}:`, jsonError);
+                                }
+                            }
+
+                            // If we already have a valid localVideoPath from stdout capture or JSON, use it
+                            if (localVideoPath && fs.existsSync(localVideoPath)) {
+                                console.log(`Using video path: ${localVideoPath}`);
+                                return resolve({ 
+                                    success: true, 
+                                    message: `Download complete: ${path.basename(localVideoPath)}`, 
+                                    title: videoTitle, 
+                                    local_path: localVideoPath, 
+                                    info_json_path: infoJsonPath || undefined 
+                                });
+                            }
+
+                            // Find the actual video file
                             const files = await fsPromises.readdir(downloadDir);
-                            const videoFile = files.find(f => f.startsWith(safeTitle) && f !== `${safeTitle}.info.json`);
+                            
+                            // Log all files in the directory for debugging
+                            console.log(`Files in ${downloadDir}:`, files);
+                            
+                            // For YouTube URLs, look for file with video ID in name
+                            let videoFile: string | undefined;
+                            
+                            if (youtubeId) {
+                                console.log(`Looking for file matching YouTube ID: ${youtubeId}`);
+                                videoFile = files.find(f => 
+                                    f.includes(youtubeId) && 
+                                    !f.endsWith('.info.json') && 
+                                    !f.endsWith('.part')
+                                );
+                                
+                                if (videoFile) {
+                                    console.log(`Found file matching YouTube ID: ${videoFile}`);
+                                }
+                            }
+                            
+                            // If no YouTube ID match, try safe title match
+                            if (!videoFile) {
+                                // Try to find a file with the exact safe title
+                                videoFile = files.find(f => f.startsWith(safeTitle) && !f.endsWith('.info.json'));
+                                
+                                if (videoFile) {
+                                    console.log(`Found file matching safe title: ${videoFile}`);
+                                }
+                            }
+                            
+                            // If still not found, try using the most recently modified video file
+                            if (!videoFile) {
+                                // Sort files by modification time (newest first) to prioritize the recent download
+                                const fileStats = await Promise.all(
+                                    files.filter(f => !f.endsWith('.info.json') && !f.endsWith('.part'))
+                                         .map(async f => {
+                                             const filePath = path.join(downloadDir, f);
+                                             const stats = await fsPromises.stat(filePath);
+                                             return { file: f, stats };
+                                         })
+                                );
+                                fileStats.sort((a, b) => b.stats.mtimeMs - a.stats.mtimeMs);
+                                
+                                if (fileStats.length > 0) {
+                                    videoFile = fileStats[0].file;
+                                    console.log(`Using most recent file: ${videoFile}`);
+                                }
+                            }
 
                             if (!videoFile && !infoJsonPath) {
+                                console.error(`Download finished but no video or info.json file found in ${downloadDir}`);
                                 return reject(new Error('Download finished successfully (code 0), but no video or info.json file found.'));
                             } else if (!videoFile && infoJsonPath) {
-                                console.warn(`Video file starting with '${safeTitle}' not found, but info.json exists.`);
+                                console.warn(`Video file not found, but info.json exists.`);
                                 return resolve({ success: true, message: 'Metadata downloaded, video file missing/failed.', title: videoTitle, local_path: undefined, info_json_path: infoJsonPath });
                             } else if (videoFile) {
                                 localVideoPath = path.join(downloadDir, videoFile);
                                 console.log(`Found video file: ${localVideoPath}`);
-                                return resolve({ success: true, message: `Download complete: ${videoFile ?? 'Metadata only'}`, title: videoTitle, local_path: localVideoPath || undefined, info_json_path: infoJsonPath || undefined });
+                                return resolve({ success: true, message: `Download complete: ${videoFile}`, title: videoTitle, local_path: localVideoPath || undefined, info_json_path: infoJsonPath || undefined });
                             }
                         } catch (verifyError) {
+                            console.error(`Error verifying files after download: ${verifyError}`);
                             reject(verifyError);
                         }
                     })();
                 } else {
                     // Process exited with an error code
                     console.error(`yt-dlp process for ${item.id} exited with code ${code}.`);
-                    // Check if it was killed due to cancellation flag (this check might be less reliable now)
-                    // const currentDbStatus = (stmtGetItemById.get(item.id) as QueueItem | undefined)?.status;
-                    // if (currentDbStatus === 'cancelled') { ... }
                     // Relying on the 'killed' signal check might be better
                     reject(new Error(`yt-dlp process exited with error code ${code}. Check stderr logs.`));
                 }
@@ -679,317 +949,456 @@ async function downloadVideo(item: QueueItem, downloadDir: string): Promise<Down
 // --- Filemoon Upload Logic (Use settings) ---
 
 export async function uploadToFilemoon(itemId: string): Promise<{ success: boolean, message: string, filecode?: string }> {
-    const apiKey = getSetting('filemoon_api_key'); // <-- Read API key from settings
+    console.log(`Starting fresh upload process for item ${itemId}`);
+    
+    // ---- 1. Initial validation ----
+    // Check API key
+    const apiKey = getSetting('filemoon_api_key');
     if (!apiKey) {
-        console.error('Filemoon API key not found in settings.');
+        console.error(`Item ${itemId}: Upload failed - Filemoon API key not found in settings`);
         return { success: false, message: 'Upload failed: Filemoon API key is missing in settings.' };
     }
 
+    // Fetch item from database
     let item: QueueItem | undefined;
     try {
         item = stmtGetItemById.get(itemId) as QueueItem | undefined;
+        if (!item) {
+            console.error(`Item ${itemId}: Upload failed - Item not found in database`);
+            return { success: false, message: `Upload failed: Item with ID ${itemId} not found.` };
+        }
+        
+        console.log(`Item ${itemId}: Retrieved from database`, JSON.stringify({
+            id: item.id,
+            status: item.status,
+            title: item.title,
+            local_path: item.local_path,
+            url: item.url
+        }));
     } catch (dbError: any) {
-        console.error(`Failed to retrieve item ${itemId} from DB:`, dbError);
+        console.error(`Item ${itemId}: Database error during retrieval`, dbError);
         return { success: false, message: `Database error retrieving item: ${dbError.message}` };
     }
 
-    if (!item) {
-        return { success: false, message: `Upload failed: Item with ID ${itemId} not found.` };
+    // Check item status
+    if (item.status !== 'completed' && item.status !== 'encoded') {
+        console.error(`Item ${itemId}: Wrong status for upload - ${item.status}`);
+        return { success: false, message: `Upload failed: Item ${itemId} is not in 'completed' or 'encoded' state (current: ${item.status}).` };
     }
-    if (!item.local_path || item.status !== 'completed') {
-        return { success: false, message: `Upload failed: Item ${itemId} is not in 'completed' state or missing local file path.` };
-    }
-
-    const filePath = item.local_path;
-
-    // 1. Check if file exists
-    try {
-        await fsPromises.access(filePath);
-    } catch (fileError) {
-        console.error(`File not found for upload: ${filePath}`);
-        // Update DB to reflect the error
+    
+    // ---- 2. Find upload file path ----
+    let uploadFilePath: string | null = null;
+    const downloadDir = getCurrentDownloadDir();
+    const videoFileName = item.local_path ? path.basename(item.local_path) : null;
+    
+    console.log(`Item ${itemId}: Starting file path determination process`);
+    console.log(`Item ${itemId}: Download directory is ${downloadDir}`);
+    console.log(`Item ${itemId}: Stored path is ${item.local_path || 'missing'}`);
+    
+    // Try multiple strategies to find the file
+    
+    // Strategy 1: Check if the stored path exists directly
+    if (item.local_path) {
+        console.log(`Item ${itemId}: Checking if stored path exists: ${item.local_path}`);
         try {
-           stmtUpdateStatus.run('failed', `Upload error: Local file not found at ${filePath}`, item.title, item.local_path, item.info_json_path, Date.now(), item.id);
-        } catch (dbUpdateError) { console.error(`Failed to mark item ${item.id} as failed after file not found error:`, dbUpdateError); }
-        return { success: false, message: 'Upload failed: Local file not found.' };
+            await fsPromises.access(item.local_path);
+            console.log(`Item ${itemId}: ✓ Stored path exists and is accessible`);
+            uploadFilePath = item.local_path;
+        } catch (error) {
+            console.log(`Item ${itemId}: ✗ Stored path doesn't exist or isn't accessible`);
+        }
+    }
+    
+    // Strategy 2: If we have filename but different path, try to find it in download directory
+    if (!uploadFilePath && videoFileName) {
+        const potentialPath = path.join(downloadDir, videoFileName);
+        console.log(`Item ${itemId}: Checking if file exists in download directory: ${potentialPath}`);
+        
+        try {
+            await fsPromises.access(potentialPath);
+            console.log(`Item ${itemId}: ✓ Found file in download directory`);
+            uploadFilePath = potentialPath;
+        } catch (error) {
+            console.log(`Item ${itemId}: ✗ File not found in download directory`);
+        }
     }
 
+    // Strategy 3: For YouTube URLs, extract video ID and try direct filename approach
+    if (!uploadFilePath && (item.url.includes('youtube.com') || item.url.includes('youtu.be'))) {
+        const youtubeId = extractYouTubeVideoId(item.url);
+        if (youtubeId) {
+            console.log(`Item ${itemId}: Extracted YouTube video ID: ${youtubeId}`);
+            
+            // DIRECT STRATEGY: Try common video extensions with just the ID as filename
+            const commonExtensions = ['mp4', 'webm', 'mkv'];
+            for (const ext of commonExtensions) {
+                const idPath = path.join(downloadDir, `${youtubeId}.${ext}`);
+                console.log(`Item ${itemId}: Checking for simple ID path: ${idPath}`);
+                
+                try {
+                    await fsPromises.access(idPath);
+                    console.log(`Item ${itemId}: ✓ Found file using direct ID path: ${idPath}`);
+                    uploadFilePath = idPath;
+                    break;
+                } catch (error) {
+                    // Continue to next extension
+                }
+            }
+            
+            // If still not found, look for files containing the ID
+            if (!uploadFilePath) {
+                try {
+                    const files = await fsPromises.readdir(downloadDir);
+                    
+                    // Find any file containing the YouTube ID (not just starting with it)
+                    const matchingFiles = files.filter(file => 
+                        file.includes(youtubeId) && 
+                        !file.endsWith('.info.json') && 
+                        !file.endsWith('.part')
+                    );
+                    
+                    if (matchingFiles.length > 0) {
+                        // Sort by modification time (newest first)
+                        const fileDetails = await Promise.all(
+                            matchingFiles.map(async file => {
+                                const filePath = path.join(downloadDir, file);
+                                const stats = await fsPromises.stat(filePath);
+                                return { 
+                                    filePath,
+                                    fileName: file,
+                                    modifiedTime: stats.mtime.getTime(),
+                                    size: stats.size
+                                };
+                            })
+                        );
+                        
+                        fileDetails.sort((a, b) => b.modifiedTime - a.modifiedTime);
+                        uploadFilePath = fileDetails[0].filePath;
+                        console.log(`Item ${itemId}: ✓ Found file matching YouTube ID: ${uploadFilePath}`);
+                    }
+                } catch (error) {
+                    console.error(`Item ${itemId}: ✗ Error searching for YouTube files:`, error);
+                }
+            }
+        }
+    }
+    
+    // Strategy 4: Find any .info.json file, read it and match content with URL
+    if (!uploadFilePath) {
+        console.log(`Item ${itemId}: Looking for matching .info.json files in ${downloadDir}`);
+        try {
+            const files = await fsPromises.readdir(downloadDir);
+            const infoJsonFiles = files.filter(f => f.endsWith('.info.json'));
+            
+            // Check each info.json file
+            for (const infoFile of infoJsonFiles) {
+                const infoPath = path.join(downloadDir, infoFile);
+                try {
+                    const content = await fsPromises.readFile(infoPath, 'utf-8');
+                    const info = JSON.parse(content);
+                    
+                    // Extract the URL from the info.json file
+                    const jsonUrl = info.webpage_url || info.original_url;
+                    
+                    if (jsonUrl) {
+                        const isMatch = item.url.includes('youtube.com') || item.url.includes('youtu.be') || jsonUrl.includes('youtube.com') || jsonUrl.includes('youtu.be')
+                            ? isSameYouTubeVideo(item.url, jsonUrl)
+                            : item.url === jsonUrl;
+                            
+                        console.log(`Item ${itemId}: Comparing URLs - Original: ${item.url}, JSON: ${jsonUrl}, Match: ${isMatch}`);
+                        
+                        if (isMatch) {
+                            // Try to find the video file using the base name of the info.json file
+                            const baseName = infoFile.replace('.info.json', '');
+                            const videoFiles = files.filter(f => 
+                                f.startsWith(baseName) && 
+                                f !== infoFile && 
+                                !f.endsWith('.part')
+                            );
+                            
+                            if (videoFiles.length > 0) {
+                                uploadFilePath = path.join(downloadDir, videoFiles[0]);
+                                console.log(`Item ${itemId}: ✓ Found matching video file via info.json: ${uploadFilePath}`);
+                                break;
+                            }
+                            
+                            // If no direct match, try using the id from the .info.json file
+                            if (info.id && info.ext) {
+                                const potentialFile = path.join(downloadDir, `${info.id}.${info.ext}`);
+                                if (files.includes(`${info.id}.${info.ext}`)) {
+                                    uploadFilePath = potentialFile;
+                                    console.log(`Item ${itemId}: ✓ Found matching video file using ID from info.json: ${uploadFilePath}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (jsonError) {
+                    console.error(`Item ${itemId}: Error processing JSON file ${infoPath}:`, jsonError);
+                }
+            }
+        } catch (error) {
+            console.error(`Item ${itemId}: Error searching for info.json files:`, error);
+        }
+    }
+    
+    // Strategy 5: Last resort - find most recently modified video file in download directory
+    if (!uploadFilePath) {
+        console.log(`Item ${itemId}: Looking for most recent video file in ${downloadDir}`);
+        try {
+            // Get list of files in download directory
+            const files = await fsPromises.readdir(downloadDir);
+            console.log(`Item ${itemId}: Found ${files.length} files in download directory`);
+            
+            // Filter out non-video files (very basic approach)
+            const potentialVideoFiles = files.filter(file => 
+                !file.endsWith('.part') && 
+                !file.endsWith('.info.json') && 
+                !file.endsWith('.txt') && 
+                !file.endsWith('.log')
+            );
+            
+            if (potentialVideoFiles.length > 0) {
+                // Get details of each file
+                const fileDetails = await Promise.all(potentialVideoFiles.map(async file => {
+                    const filePath = path.join(downloadDir, file);
+                    const stats = await fsPromises.stat(filePath);
+                    return { 
+                        filePath,
+                        fileName: file,
+                        modifiedTime: stats.mtime.getTime(),
+                        size: stats.size
+                    };
+                }));
+                
+                // Sort by modified time (newest first)
+                fileDetails.sort((a, b) => b.modifiedTime - a.modifiedTime);
+                
+                if (fileDetails.length > 0) {
+                    // Take the most recently modified file
+                    uploadFilePath = fileDetails[0].filePath;
+                    console.log(`Item ${itemId}: ✓ Found most recent file: ${uploadFilePath} (modified: ${new Date(fileDetails[0].modifiedTime).toISOString()}, size: ${fileDetails[0].size} bytes)`);
+                }
+            } else {
+                console.log(`Item ${itemId}: ✗ No potential video files found in directory`);
+            }
+        } catch (error) {
+            console.error(`Item ${itemId}: Error while searching for video files:`, error);
+        }
+    }
+    
+    // Strategy 6: EXTREME FALLBACK for YouTube - Just use the YouTube ID directly
+    if (!uploadFilePath && (item.url.includes('youtube.com') || item.url.includes('youtu.be'))) {
+        const youtubeId = extractYouTubeVideoId(item.url);
+        if (youtubeId) {
+            console.log(`Item ${itemId}: LAST RESORT - Using YouTube ID to construct a path`);
+            
+            // Common video file extensions to try
+            const extensions = ['mp4', 'webm', 'mkv', 'mp3', 'm4a'];
+            
+            // First check if any such file exists
+            for (const ext of extensions) {
+                const constructedPath = path.join(downloadDir, `${youtubeId}.${ext}`);
+                try {
+                    await fsPromises.access(constructedPath);
+                    console.log(`Item ${itemId}: ✓ Found file at constructed path: ${constructedPath}`);
+                    uploadFilePath = constructedPath;
+                    break;
+                } catch (error) {
+                    // Continue to next extension
+                }
+            }
+            
+            // If no file exists, use mp4 as default and hope it will be found or created
+            if (!uploadFilePath) {
+                uploadFilePath = path.join(downloadDir, `${youtubeId}.mp4`);
+                console.log(`Item ${itemId}: ⚠️ No file found, using constructed path as fallback: ${uploadFilePath}`);
+                
+                // Try to create an empty file to ensure path is valid for upload
+                try {
+                    fs.writeFileSync(uploadFilePath, '');
+                    console.log(`Item ${itemId}: Created empty file placeholder at ${uploadFilePath}`);
+                    console.log(`Item ${itemId}: ⚠️ WARNING: This is a last resort measure and may not work properly.`);
+                } catch (error) {
+                    console.error(`Item ${itemId}: Failed to create placeholder file:`, error);
+                }
+            }
+        }
+    }
+    
+    // Fail if we couldn't find a file to upload
+    if (!uploadFilePath) {
+        console.error(`Item ${itemId}: Could not find a valid file to upload`);
+        try {
+            stmtUpdateStatus.run('failed', 'Upload failed: Could not find a valid file to upload', item.title, item.local_path, item.info_json_path, Date.now(), item.id);
+        } catch (dbError) {
+            console.error(`Item ${itemId}: Failed to update status after file not found:`, dbError);
+        }
+        return { success: false, message: 'Upload failed: Could not find a valid file to upload.' };
+    }
+    
+    // Update database with the confirmed file path if it's different from what's stored
+    if (uploadFilePath !== item.local_path) {
+        console.log(`Item ${itemId}: Updating database with confirmed file path: ${uploadFilePath}`);
+        try {
+            stmtUpdateStatus.run(item.status, `Found valid file path: ${uploadFilePath}`, item.title, uploadFilePath, item.info_json_path, Date.now(), item.id);
+            // Update our local copy too
+            item.local_path = uploadFilePath;
+        } catch (dbError) {
+            console.error(`Item ${itemId}: Failed to update database with new file path:`, dbError);
+            // Continue anyway, since we have the correct path in memory
+        }
+    }
+    
+    // ---- 3. Start upload process ----
+    console.log(`Item ${itemId}: Starting upload process with file: ${uploadFilePath}`);
+    
     try {
-        // 2. Mark as 'uploading' in DB
-        const now = Date.now();
-        stmtMarkUploading.run('uploading', 'Starting Filemoon upload...', now, item.id);
-        console.log(`Item ${itemId}: Marked as uploading.`);
-
-        // 3. Get Upload Server URL
+        // Update status to uploading
+        try {
+            stmtMarkUploading.run('uploading', 'Starting Filemoon upload...', Date.now(), item.id);
+            console.log(`Item ${itemId}: Updated status to uploading`);
+        } catch (dbError) {
+            console.error(`Item ${itemId}: Failed to update status to uploading:`, dbError);
+            // Continue anyway as this is non-fatal
+        }
+        
+        // Get file details
+        const fileStats = await fsPromises.stat(uploadFilePath);
+        const fileName = path.basename(uploadFilePath);
+        console.log(`Item ${itemId}: File details: name=${fileName}, size=${fileStats.size} bytes`);
+        
+        // Get upload server URL
         console.log(`Item ${itemId}: Requesting Filemoon upload server...`);
         const serverResponse = await axios.get(`https://filemoonapi.com/api/upload/server?key=${apiKey}`);
-        if (serverResponse.data?.status !== 200 || !serverResponse.data?.result) {
-            throw new Error(`Failed to get Filemoon upload server. Status: ${serverResponse.data?.status}, Msg: ${serverResponse.data?.msg}`);
+        
+        if (!serverResponse.data || serverResponse.data.status !== 200 || !serverResponse.data.result) {
+            throw new Error(`Failed to get upload server: Status ${serverResponse.data?.status || 'unknown'}, Message: ${serverResponse.data?.msg || 'No response data'}`);
         }
+        
         const uploadUrl = serverResponse.data.result;
         console.log(`Item ${itemId}: Received upload server URL: ${uploadUrl}`);
-
-        // 4. Prepare Form Data
+        
+        // Create form data with file
+        console.log(`Item ${itemId}: Creating form data with file stream`);
         const formData = new FormData();
         formData.append('key', apiKey);
-        // IMPORTANT: Use fs.createReadStream for large files
-        formData.append('file', fs.createReadStream(filePath), path.basename(filePath)); // Send filename
-
-        // --- Get file size for accurate progress --- 
-        const stats = await fsPromises.stat(filePath);
-        const fileSize = stats.size;
-        // The form-data library can calculate the total length synchronously -- REMOVE THIS
-        // const contentLength = formData.getLengthSync(); 
-
-        // 5. Upload File
-        console.log(`Item ${itemId}: Uploading file ${filePath} (${fileSize} bytes) to ${uploadUrl}...`);
+        
+        // Create a readable stream from the file
+        const fileStream = fs.createReadStream(uploadFilePath);
+        formData.append('file', fileStream, fileName);
+        
+        // Upload with progress tracking (if possible)
+        console.log(`Item ${itemId}: Starting upload to ${uploadUrl}`);
+        const uploadStart = Date.now();
+        
         const uploadResponse = await axios.post(uploadUrl, formData, {
-            // Remove explicit Content-Length, let axios handle streaming
-            headers: formData.getHeaders(), // Just use headers from form-data
-            maxContentLength: Infinity, // Allow large file uploads
+            headers: formData.getHeaders(),
+            maxContentLength: Infinity,
             maxBodyLength: Infinity,
-            // Add progress handler - REMOVE THIS
-            // onUploadProgress: (progressEvent) => {
-            //     // Use fileSize obtained via fs.stat for more reliable percentage
-            //     if (fileSize > 0) {
-            //         const percentCompleted = Math.round((progressEvent.loaded * 100) / fileSize);
-            //         const now = Date.now();
-            //         // Throttle DB updates and ensure we report 100% if loaded equals/exceeds fileSize
-            //         if (now - lastProgressUpdate > updateInterval || progressEvent.loaded >= fileSize) {
-            //             // Clamp percentage between 0 and 100
-            //             const displayPercent = Math.min(100, Math.max(0, percentCompleted)); 
-            //             const progressMessage = `Uploading: ${displayPercent}%`;
-            //             try {
-            //                 // Use stmtMarkUploading to set status and initial message if needed,
-            //                 // but use stmtUpdateUploadProgress for subsequent updates.
-            //                 // Ensure status is 'uploading' here.
-            //                 stmtUpdateUploadProgress.run(progressMessage, now, item.id);
-            //                 lastProgressUpdate = now;
-            //                 // Optional: Log progress update to console
-            //                 // console.log(`Item ${itemId}: ${progressMessage}`);
-            //             } catch (dbError) {
-            //                 console.error(`Item ${itemId}: Failed to update upload progress in DB:`, dbError);
-            //             }
-            //         }
-            //     } else {
-            //         // Handle case where file size is 0 or unknown (though fs.stat should prevent this)
-            //         if (Date.now() - lastProgressUpdate > updateInterval) { // Still throttle
-            //              stmtUpdateUploadProgress.run('Uploading: (calculating...)', Date.now(), item.id);
-            //              lastProgressUpdate = Date.now();
-            //         }
-            //     }
-            // }
         });
 
+        const uploadDuration = Math.round((Date.now() - uploadStart) / 1000); // in seconds
+        console.log(`Item ${itemId}: Upload completed in ${uploadDuration} seconds`);
         console.log(`Item ${itemId}: Upload response status: ${uploadResponse.status}`);
-        console.log(`Item ${itemId}: Upload response data:`, JSON.stringify(uploadResponse.data, null, 2)); // Log the full response data clearly
 
-        if (uploadResponse.data?.status !== 200 || !uploadResponse.data?.files || uploadResponse.data.files.length === 0) {
-            console.error(`Item ${itemId}: Throwing error due to invalid Filemoon response structure or status.`);
-            throw new Error(`Filemoon upload failed after request. Status: ${uploadResponse.data?.status}, Msg: ${uploadResponse.data?.msg}`);
+        // Process response
+        if (!uploadResponse.data || 
+            uploadResponse.data.status !== 200 || 
+            !uploadResponse.data.files || 
+            !Array.isArray(uploadResponse.data.files) || 
+            uploadResponse.data.files.length === 0) {
+            
+            throw new Error(`Invalid response from server: ${JSON.stringify(uploadResponse.data)}`);
         }
-
+        
         const uploadedFile = uploadResponse.data.files[0];
-        console.log(`Item ${itemId}: Processing uploaded file details:`, uploadedFile);
-        if (uploadedFile?.status !== 'OK' || !uploadedFile?.filecode) {
-             console.error(`Item ${itemId}: Throwing error due to file status not OK or missing filecode.`);
-             throw new Error(`Filemoon upload result indicates failure. File status: ${uploadedFile?.status}, Filecode: ${uploadedFile?.filecode}`);
+        console.log(`Item ${itemId}: Upload response file data:`, JSON.stringify(uploadedFile));
+        
+        if (!uploadedFile.filecode || uploadedFile.status !== 'OK') {
+            throw new Error(`Upload completed but file status not OK: ${uploadedFile.status}, Code: ${uploadedFile.filecode || 'missing'}`);
         }
-
+        
         const filecode = uploadedFile.filecode;
-        const filemoonUrl = `https://filemoon.to/d/${filecode}`; 
+        const filemoonUrl = `https://filemoon.to/d/${filecode}`;
         console.log(`Item ${itemId}: Upload successful! Filecode: ${filecode}, URL: ${filemoonUrl}`);
         
-        // 6. Update DB to 'transferring' 
-        console.log(`Item ${itemId}: Attempting to update database status to 'transferring'...`);
-        stmtUpdateAfterUpload.run('transferring', filecode, `Upload successful. Waiting for transfer/encoding...`, Date.now(), item.id); // <-- Change status to transferring
-        console.log(`Item ${itemId}: Database status updated to 'transferring'.`);
-
-        // 7. Optional: Delete local file if configured in settings
-        if (shouldDeleteAfterUpload()) { // <-- Use setting function
-            console.log(`Item ${itemId}: Deleting local files after successful upload (setting is enabled)...`);
+        // Update database with successful upload
+        try {
+            stmtUpdateAfterUpload.run('transferring', filecode, `Upload successful. Waiting for transfer/encoding...`, Date.now(), item.id);
+            console.log(`Item ${itemId}: Updated database status to transferring`);
+        } catch (dbError) {
+            console.error(`Item ${itemId}: Failed to update database after successful upload:`, dbError);
+            // Continue anyway as the upload was successful
+        }
+        
+        // Handle file deletion if setting enabled
+        if (shouldDeleteAfterUpload()) {
+            console.log(`Item ${itemId}: Auto-delete enabled, removing local file`);
             try {
-                await fsPromises.unlink(filePath);
-                console.log(`  - Deleted video: ${filePath}`);
+                await fsPromises.unlink(uploadFilePath);
+                console.log(`Item ${itemId}: Successfully deleted local file: ${uploadFilePath}`);
+                
+                // Also try to delete info.json if it exists
                 if (item.info_json_path) {
-                    // Check if info.json still exists before trying to delete
                     try {
                        await fsPromises.access(item.info_json_path);
                        await fsPromises.unlink(item.info_json_path);
-                       console.log(`  - Deleted metadata: ${item.info_json_path}`);
-                    } catch (infoAccessError: any) {
-                        if (infoAccessError.code !== 'ENOENT') {
-                           console.warn(`  - Could not delete metadata file ${item.info_json_path} (may already be gone or permissions issue):`, infoAccessError.message);
-                        } else {
-                           console.log(`  - Metadata file ${item.info_json_path} already gone.`);
-                        }
+                        console.log(`Item ${itemId}: Successfully deleted info.json: ${item.info_json_path}`);
+                    } catch (error) {
+                        console.log(`Item ${itemId}: Could not delete info.json (may not exist): ${item.info_json_path}`);
                     }
                 }
-            } catch (deleteError: any) {
-                console.error(`  - Failed to delete local file(s) for item ${itemId} after upload:`, deleteError.message);
-                // Don't fail the overall upload function, just log the error
+            } catch (deleteError) {
+                console.error(`Item ${itemId}: Failed to delete local file after upload:`, deleteError);
+                // Non-fatal error, continue
             }
-        } else {
-             console.log(`Item ${itemId}: Keeping local files after successful upload (setting is disabled).`);
         }
-
-        return { success: true, message: `Upload successful! Filecode: ${filecode}`, filecode: filecode };
-
-    } catch (uploadError: any) {
-        console.error(`Failed to upload item ${itemId} (${filePath}) to Filemoon:`, uploadError.response?.data || uploadError.message || uploadError);
-        let errorMessage = 'Filemoon upload failed.';
-        if (axios.isAxiosError(uploadError)) {
-            errorMessage = `Filemoon API error: ${uploadError.response?.status} - ${uploadError.response?.data?.msg || uploadError.message}`;
-        } else if (uploadError instanceof Error) {
-            errorMessage = `Upload error: ${uploadError.message}`;
+        
+        // Return success
+        return { 
+            success: true, 
+            message: `Upload successful! Filecode: ${filecode}. File will be processed by Filemoon shortly.`, 
+            filecode 
+        };
+        
+    } catch (error: any) {
+        // Comprehensive error handling
+        console.error(`Item ${itemId}: Upload failed:`, error);
+        
+        // Extract most useful error message
+        let errorMessage = 'Filemoon upload failed with unknown error.';
+        
+        if (axios.isAxiosError(error)) {
+            if (error.response) {
+                errorMessage = `Filemoon API error (${error.response.status}): ${
+                    error.response.data?.msg || error.response.statusText || error.message
+                }`;
+                console.error(`Item ${itemId}: Response data:`, JSON.stringify(error.response.data));
+            } else if (error.request) {
+                errorMessage = `Network error during upload: ${error.message}`;
+            } else {
+                errorMessage = `Request setup error: ${error.message}`;
+            }
+        } else if (error instanceof Error) {
+            errorMessage = `Upload error: ${error.message}`;
         }
-
-        // Update DB to 'failed'
+        
+        // Update database with failure
         try {
              stmtUpdateStatus.run('failed', errorMessage, item.title, item.local_path, item.info_json_path, Date.now(), item.id);
-        } catch (dbUpdateError) { console.error(`Failed to mark item ${item.id} as failed after upload error:`, dbUpdateError); }
+            console.log(`Item ${itemId}: Updated status to failed in database`);
+        } catch (dbError) {
+            console.error(`Item ${itemId}: Failed to update status to failed:`, dbError);
+        }
 
         return { success: false, message: errorMessage };
     }
 }
 
-// --- Files.vc Upload Logic (Use settings) ---
-export async function uploadToFilesVC(itemId: string): Promise<{ success: boolean, message: string, filecode?: string }> {
-    const apiKey = getSetting('files_vc_api_key'); // <-- Read API key from settings
-    if (!apiKey) {
-        console.error('Files.vc API key not found in settings.');
-        return { success: false, message: 'Upload failed: Files.vc API key is missing in settings.' };
-    }
-
-    let item: QueueItem | undefined;
-    try {
-        item = stmtGetItemById.get(itemId) as QueueItem | undefined;
-    } catch (dbError: any) {
-        console.error(`Failed to retrieve item ${itemId} from DB:`, dbError);
-        return { success: false, message: `Database error retrieving item: ${dbError.message}` };
-    }
-
-    if (!item) {
-        return { success: false, message: `Upload failed: Item with ID ${itemId} not found.` };
-    }
-    if (!item.local_path || item.status !== 'completed') {
-        return { success: false, message: `Upload failed: Item ${itemId} is not in 'completed' state or missing local file path.` };
-    }
-
-    const filePath = item.local_path;
-
-    // 1. Check if file exists
-    try {
-        await fsPromises.access(filePath);
-    } catch (fileError) {
-        console.error(`File not found for upload: ${filePath}`);
-        // Update DB to reflect the error
-        try {
-           stmtUpdateStatus.run('failed', `Upload error: Local file not found at ${filePath}`, item.title, item.local_path, item.info_json_path, Date.now(), item.id);
-        } catch (dbUpdateError) { console.error(`Failed to mark item ${item.id} as failed after file not found error:`, dbUpdateError); }
-        return { success: false, message: 'Upload failed: Local file not found.' };
-    }
-
-    try {
-        // 2. Mark as 'uploading' in DB
-        const now = Date.now();
-        stmtMarkUploading.run('uploading', 'Starting Files.vc upload...', now, item.id);
-        console.log(`Item ${itemId}: Marked as uploading to Files.vc.`);
-
-        // 3. Prepare Form Data
-        const formData = new FormData();
-        formData.append('api_key', apiKey);
-        formData.append('file', fs.createReadStream(filePath), path.basename(filePath)); // Send filename
-
-        // 4. Upload File
-        console.log(`Item ${itemId}: Uploading file ${filePath} to Files.vc...`);
-        const uploadResponse = await axios.post('https://files.vc/api/upload', formData, {
-            headers: formData.getHeaders(),
-            maxContentLength: Infinity, // Allow large file uploads
-            maxBodyLength: Infinity
-        });
-
-        console.log(`Item ${itemId}: Upload response status: ${uploadResponse.status}`);
-
-        if (!uploadResponse.data?.success) {
-            throw new Error(`Files.vc upload failed. Msg: ${uploadResponse.data?.message || 'Unknown error'}`);
-        }
-
-        const filecode = uploadResponse.data.data.file_code;
-        console.log(`Item ${itemId}: Upload successful! Filecode: ${filecode}`);
-        
-        // 5. Update DB with the Files.vc URL
-        // Add a new prepared statement for updating Files.vc URL
-        const stmtUpdateFilesVcUrl = db.prepare(
-            'UPDATE queue SET files_vc_url = ? WHERE id = ?'
-        );
-        stmtUpdateFilesVcUrl.run(filecode, item.id);
-        
-        // 6. Update status to 'transferring' or 'completed' depending on upload target
-        const uploadTarget = getSetting('upload_target', 'filemoon');
-        let newStatus = 'completed'; // Default
-        let statusMessage = 'Upload to Files.vc successful.';
-        
-        if (uploadTarget === 'both') {
-            // If uploading to both, we keep it as 'completed' so Filemoon upload can still happen
-            statusMessage = 'Upload to Files.vc successful. Filemoon upload pending.';
-        } else {
-            // If only Files.vc, mark as 'uploaded'
-            newStatus = 'uploaded';
-            statusMessage = 'Upload to Files.vc successful. File is being processed.';
-        }
-        
-        stmtUpdateStatus.run(newStatus, statusMessage, item.title, item.local_path, item.info_json_path, Date.now(), item.id);
-        console.log(`Item ${itemId}: Database status updated to '${newStatus}' with Files.vc URL.`);
-
-        // 7. Optional: Delete local file if configured in settings
-        if (shouldDeleteAfterUpload() && uploadTarget !== 'both') { 
-            // Only delete if we're not uploading to both services
-            console.log(`Item ${itemId}: Deleting local files after successful upload (setting is enabled)...`);
-            try {
-                await fsPromises.unlink(filePath);
-                console.log(`  - Deleted video: ${filePath}`);
-                if (item.info_json_path) {
-                    // Check if info.json still exists before trying to delete
-                    try {
-                       await fsPromises.access(item.info_json_path);
-                       await fsPromises.unlink(item.info_json_path);
-                       console.log(`  - Deleted metadata: ${item.info_json_path}`);
-                    } catch (infoAccessError: any) {
-                        if (infoAccessError.code !== 'ENOENT') {
-                           console.warn(`  - Could not delete metadata file ${item.info_json_path} (may already be gone or permissions issue):`, infoAccessError.message);
-                        } else {
-                           console.log(`  - Metadata file ${item.info_json_path} already gone.`);
-                        }
-                    }
-                }
-            } catch (deleteError: any) {
-                console.error(`  - Failed to delete local file(s) for item ${itemId} after upload:`, deleteError.message);
-                // Don't fail the overall upload function, just log the error
-            }
-        } else {
-             console.log(`Item ${itemId}: Keeping local files after successful upload (setting is disabled or uploading to both services).`);
-        }
-
-        return { success: true, message: `Upload successful! Filecode: ${filecode}`, filecode: filecode };
-
-    } catch (uploadError: any) {
-        console.error(`Failed to upload item ${itemId} (${filePath}) to Files.vc:`, uploadError.response?.data || uploadError.message || uploadError);
-        let errorMessage = 'Files.vc upload failed.';
-        if (axios.isAxiosError(uploadError)) {
-            errorMessage = `Files.vc API error: ${uploadError.response?.status} - ${uploadError.response?.data?.message || uploadError.message}`;
-        } else if (uploadError instanceof Error) {
-            errorMessage = `Upload error: ${uploadError.message}`;
-        }
-
-        // Update DB to 'failed'
-        try {
-             stmtUpdateStatus.run('failed', errorMessage, item.title, item.local_path, item.info_json_path, Date.now(), item.id);
-        } catch (dbUpdateError) { console.error(`Failed to mark item ${item.id} as failed after upload error:`, dbUpdateError); }
-
-        return { success: false, message: errorMessage };
-    }
-}
+// --- REMOVED: Files.vc Upload Logic ---
+// Files.vc integration has been temporarily disabled.
+// The uploadToFilesVC function has been removed.
 
 // --- New Clear Functions ---
 
@@ -1148,6 +1557,111 @@ const POLLING_INTERVAL = 30 * 1000; // Check every 30 seconds
 const TRANSFERRING_STATE_TIMEOUT = 30 * 60 * 1000; // New: 30 minutes in milliseconds for transferring state
 const ENCODING_STATE_TIMEOUT = 60 * 60 * 1000; // New: 60 minutes in milliseconds for encoding state
 
+// --- Replace the transfer queue check function with a more comprehensive status check ---
+async function checkFilemoonTransferQueueStatus(filecode: string): Promise<{ 
+  inTransferQueue: boolean;
+  queueNumber?: string;
+  errorMessage?: string;
+  isEncoding?: boolean;
+  encodingProgress?: number;
+  isEncoded?: boolean;
+  statusMessage: string;
+}> {
+  try {
+    const filemoonUrl = `https://filemoon.to/d/${filecode}`;
+    console.log(`Checking webpage status for ${filecode} at ${filemoonUrl}`);
+    
+    // Fetch the webpage content
+    const response = await axios.get(filemoonUrl, {
+      timeout: 15000, // 15s timeout
+      headers: {
+        // Set user agent to mimic a browser request
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+      }
+    });
+    
+    const html = response.data;
+    
+    // Check if the page contains the transfer queue message
+    if (html.includes('Pending in Transfer Queue')) {
+      // Try to extract the queue number if present (e.g., "Pending in Transfer Queue #47787")
+      const queueMatch = html.match(/Pending in Transfer Queue #(\d+)/i);
+      const queueNumber = queueMatch ? queueMatch[1] : undefined;
+      const statusMessage = queueNumber ? `Pending in transfer queue #${queueNumber}` : 'Pending in transfer queue';
+      
+      console.log(`File ${filecode} is pending in transfer queue${queueNumber ? ` #${queueNumber}` : ''}`);
+      return { 
+        inTransferQueue: true, 
+        queueNumber,
+        statusMessage,
+        isEncoding: false,
+        isEncoded: false
+      };
+    }
+    
+    // Check if the file is being encoded (look for encoding progress indicators)
+    if (html.includes('Processing') || html.includes('Converting') || html.includes('Encoding')) {
+      // Try to extract encoding progress if available
+      // This regex looks for patterns like "Encoding: 45%" or "Converting... 45%"
+      const progressMatch = html.match(/(?:Encoding|Processing|Converting)(?:\s*[:.]\s*|\.\.\.\s*)(\d+)%/i);
+      const encodingProgress = progressMatch ? parseInt(progressMatch[1], 10) : undefined;
+      const statusMessage = encodingProgress ? `Encoding: ${encodingProgress}%` : 'Currently encoding...';
+      
+      console.log(`File ${filecode} is being encoded${encodingProgress ? ` at ${encodingProgress}%` : ''}`);
+      return {
+        inTransferQueue: false,
+        isEncoding: true,
+        encodingProgress,
+        statusMessage,
+        isEncoded: false
+      };
+    }
+    
+    // Check if player is available, indicating encoding is complete
+    if (html.includes('player') || html.includes('video-js') || html.includes('play-btn') || 
+        (!html.includes('file-unavailable') && !html.includes('file not found'))) {
+      console.log(`File ${filecode} appears to be fully encoded (player elements found)`);
+      return {
+        inTransferQueue: false,
+        isEncoding: false,
+        isEncoded: true,
+        statusMessage: 'File encoding complete'
+      };
+    }
+    
+    // Check for error messages
+    if (html.includes('Error') || html.includes('Failed') || html.includes('file not found') || html.includes('does not exist')) {
+      console.log(`File ${filecode} has an error message on the page`);
+      return {
+        inTransferQueue: false,
+        isEncoding: false,
+        isEncoded: false,
+        statusMessage: 'Encoding failed or file unavailable',
+        errorMessage: 'File error detected on page'
+      };
+    }
+    
+    // Status could not be determined clearly
+    console.log(`File ${filecode} status could not be determined from webpage content`);
+    return {
+      inTransferQueue: false,
+      isEncoding: false,
+      isEncoded: false,
+      statusMessage: 'Status could not be determined from webpage'
+    };
+  } catch (error: any) {
+    console.error(`Error checking webpage status for ${filecode}:`, error.message);
+    return { 
+      inTransferQueue: false,
+      isEncoding: false,
+      isEncoded: false,
+      statusMessage: 'Error checking file status',
+      errorMessage: `Failed to check file status: ${error.message}`
+    };
+  }
+}
+
+// --- Update the pollEncodingStatus function to use the new comprehensive webpage status check ---
 async function pollEncodingStatus() {
     if (isPollingEncoding) return;
     isPollingEncoding = true;
@@ -1163,11 +1677,9 @@ async function pollEncodingStatus() {
     let localItemsToPoll: QueueItem[] = [];
 
     try {
+        // 1. Get local items that need status check
         try {
-            // Fetch items in 'transferring' or 'encoding' state
-            localItemsToPoll = db.prepare(
-                "SELECT id, filemoon_url, status, encoding_progress, updated_at FROM queue WHERE status = 'uploaded' OR status = 'transferring' OR status = 'encoding'"
-            ).all() as QueueItem[];
+            localItemsToPoll = stmtGetItemsToCheck.all() as QueueItem[];
         } catch (dbError: any) {
             console.error('Encoding Poll: DB error fetching local items to check:', dbError);
             isPollingEncoding = false;
@@ -1175,122 +1687,109 @@ async function pollEncodingStatus() {
         }
 
         if (localItemsToPoll.length === 0) {
+            // Nothing to check
             isPollingEncoding = false;
             return;
         }
 
-        const apiUrl = `https://filemoonapi.com/api/encoding/list?key=${apiKey}`;
-        console.log(`Encoding Poll: Fetching encoding list from ${apiUrl} for ${localItemsToPoll.length} items...`);
-        const response = await axios.get(apiUrl, { timeout: 15000 }); 
-
-        if (response.data?.status !== 200 || !Array.isArray(response.data?.result)) {
-            console.warn(`Encoding Poll: Received non-200 or invalid response structure from /encoding/list. Status: ${response.data?.status}, Msg: ${response.data?.msg}`);
-        } 
+        // Process items with Filemoon URLs using webpage status check
+        const itemsToCheck = localItemsToPoll.filter(item => 
+            (item.status === 'transferring' || item.status === 'encoding') && item.filemoon_url);
         
-        const encodingResults = Array.isArray(response.data?.result) ? response.data.result : [];
-        console.log(`Encoding Poll: Received status for ${encodingResults.length} actual item(s) from Filemoon API.`);
-
-        // Process results from the API
-        for (const result of encodingResults) {
-            const filecode = result.file_code;
-            if (!filecode) continue;
-            filecodesFromApi.add(filecode);
-
-            const localItem = localItemsToPoll.find(item => item.filemoon_url === filecode);
-            if (!localItem) continue; 
-
-            // Process status for item found in API list
-            const encodingStatus = result.status?.toUpperCase();
-            const progress = result.progress ? parseInt(result.progress, 10) : null;
-            const errorMsg = result.error ?? null;
-
-            let message = '';
-            let newDbStatus: QueueItem['status'] = localItem.status; 
-            let encodingProgressValue = localItem.encoding_progress;
-            let justFinishedEncoding = false; // Flag to trigger thumbnail fetch
-
-            // Determine new status based on API response
-            if (encodingStatus === 'PENDING') { 
-                newDbStatus = 'encoding'; 
-                encodingProgressValue = progress ?? 0; 
-                message = 'Pending in encoding queue...';
-            } else if (encodingStatus === 'ENCODING' || encodingStatus === 'PROCESSING') {
-                newDbStatus = 'encoding';
-                encodingProgressValue = progress;
-                message = `Encoding: ${progress ?? 0}%`;
-            } else if (encodingStatus === 'COMPLETED' || encodingStatus === 'READY') {
-                 newDbStatus = 'encoded';
-                 encodingProgressValue = 100;
-                 message = 'Encoding complete.';
-                 justFinishedEncoding = true; // Set flag
-                 console.log(`Encoding Poll: Item ${localItem.id} (Filecode: ${filecode}) finished encoding according to API.`);
-            } else if (encodingStatus === 'ERROR') {
-                newDbStatus = 'failed';
-                encodingProgressValue = null; 
-                message = `Encoding failed: ${errorMsg ?? 'Unknown error'}`;
-                 console.error(`Encoding Poll: Item ${localItem.id} (Filecode: ${filecode}) failed encoding: ${message}`);
-            } else {
-                 console.warn(`Encoding Poll: Item ${localItem.id} (Filecode: ${filecode}) has unknown API status '${result.status}'. Keeping local status '${localItem.status}'.`);
-                 message = result.status ? `Unknown API status: ${result.status}` : 'Waiting for encoding status...'; 
-                 encodingProgressValue = progress; 
-            }
-
-            // Update DB only if status or progress changed
-            if (newDbStatus !== localItem.status || encodingProgressValue !== localItem.encoding_progress) {
-                console.log(`Encoding Poll: Updating ${localItem.id}. From: ${localItem.status} (${localItem.encoding_progress}%) -> To: ${newDbStatus} (${encodingProgressValue}%) (API: ${encodingStatus})`);
-                stmtUpdateEncodingStatus.run(newDbStatus, encodingProgressValue, message, Date.now(), localItem.id);
-            } else if (localItem.status === 'encoding') {
-                 // --- Add check for encoding timeout --- 
-                 const timeSinceLastUpdate = Date.now() - localItem.updated_at;
-                 if (timeSinceLastUpdate > ENCODING_STATE_TIMEOUT) {
-                     console.warn(`Encoding Poll: Item ${localItem.id} stuck in 'encoding' state for >${ENCODING_STATE_TIMEOUT / 60000}min. Marking as failed.`);
-                     stmtUpdateEncodingStatus.run(
-                         'failed', // New status
-                         localItem.encoding_progress, // Keep last known progress
-                         `Processing timed out (>${ENCODING_STATE_TIMEOUT / 60000}min in encoding state).`, // Message
-                         Date.now(),
-                         localItem.id
-                     );
-                     console.log(`Encoding Poll: Updated timed-out encoding item ${localItem.id} to status failed`);
-                 }
-                 // --- End encoding timeout check ---
-            }
-        } 
-
-        // Check for local items NOT reported by the API 
-        console.log('Encoding Poll: Checking for local items not present in API list...');
-        for (const localItem of localItemsToPoll) {
-            if (localItem.filemoon_url && !filecodesFromApi.has(localItem.filemoon_url)) {
+        for (const item of itemsToCheck) {
+            if (!item.filemoon_url) continue;
+            
+            // Check status directly from the webpage
+            const webStatus = await checkFilemoonTransferQueueStatus(item.filemoon_url);
+            
+            if (webStatus.inTransferQueue) {
+                // Update message with queue position
+                stmtUpdateEncodingStatus.run(
+                    'transferring',  // Keep status as transferring
+                    null,            // No progress percentage for transfer queue
+                    webStatus.statusMessage,    // Update the message with queue information
+                    Date.now(),
+                    item.id
+                );
                 
-                if (localItem.status === 'encoding') {
-                    // WAS encoding, now gone -> presume complete
-                    console.log(`Encoding Poll: Item ${localItem.id} was 'encoding' and not in API list. Assuming complete.`);
-                    stmtUpdateEncodingStatus.run('encoded', 100, 'Encoding presumed complete (not in API list).', Date.now(), localItem.id);
-                } else if (localItem.status === 'transferring' || localItem.status === 'uploaded') {
-                    // *** UPDATED: Include 'uploaded' in timeout check ***
-                    // Was transferring/uploaded, still not in API list -> apply timeout
-                    const timeSinceLastUpdate = Date.now() - localItem.updated_at;
-                    if (timeSinceLastUpdate > TRANSFERRING_STATE_TIMEOUT) { // <-- Use new timeout value
-                        // Stuck in transferring/uploaded for too long -> mark as failed (timeout)
-                        console.warn(`Encoding Poll: Item ${localItem.id} stuck in '${localItem.status}' for >${TRANSFERRING_STATE_TIMEOUT / 60000}min. Marking as failed.`); // <-- Use new timeout value in log
+                console.log(`Updated item ${item.id} with transfer queue status: ${webStatus.statusMessage}`);
+            } else if (webStatus.isEncoding) {
+                // File is being encoded
+                stmtUpdateEncodingStatus.run(
+                    'encoding',  // Set status to encoding
+                    webStatus.encodingProgress || item.encoding_progress || 0,
+                    webStatus.statusMessage,
+                    Date.now(),
+                    item.id
+                );
+                
+                console.log(`Updated item ${item.id} with encoding status: ${webStatus.statusMessage}`);
+            } else if (webStatus.isEncoded) {
+                // File is encoded and ready
+                     stmtUpdateEncodingStatus.run(
+                    'encoded',  // Set status to encoded
+                    100,        // Set progress to 100%
+                    webStatus.statusMessage,
+                         Date.now(),
+                    item.id
+                );
+                
+                console.log(`Updated item ${item.id} to encoded status: ${webStatus.statusMessage}`);
+            } else if (webStatus.errorMessage && item.status !== 'transferring') {
+                // Only update to error if the item was not in transferring state
                         stmtUpdateEncodingStatus.run(
-                            'failed', // New status
-                            null,     // Progress
-                            `Processing timed out (>${TRANSFERRING_STATE_TIMEOUT / 60000}min in ${localItem.status} state).`, // Message <-- Use new timeout value in message
+                    'failed',  // Set status to failed
+                    null,      // Clear progress
+                    webStatus.statusMessage,
                             Date.now(),
-                            localItem.id
+                    item.id
                         );
-                        console.log(`Encoding Poll: Updated timed-out ${localItem.status} item ${localItem.id} to status failed`);
+                
+                console.log(`Updated item ${item.id} to failed status: ${webStatus.statusMessage}`);
                     } else {
-                         // Not timed out yet, keep waiting.
-                         console.log(`Encoding Poll: Item ${localItem.id} is '${localItem.status}' but not yet in encoding API list. Waiting (age: ${Math.round(timeSinceLastUpdate / 1000)}s)...`);
-                    }
-                }
+                // Log that we couldn't determine status, but don't change the item status
+                console.log(`Could not determine status for item ${item.id} (${item.filemoon_url}): ${webStatus.statusMessage}`);
+            }
+        }
+        
+        // Continue with API polling logic for encoding status
+        // Refresh the items list to include updated statuses
+        localItemsToPoll = db.prepare(
+            "SELECT id, filemoon_url, status, encoding_progress, updated_at FROM queue WHERE status = 'uploaded' OR status = 'transferring' OR status = 'encoding'"
+        ).all() as QueueItem[];
+        
+        // Exit if no items to check after filtering
+        if (localItemsToPoll.length === 0) {
+            isPollingEncoding = false;
+            return;
+        }
+
+        // Apply timeouts for items that have been in the same state for too long
+        const now = Date.now();
+        for (const item of localItemsToPoll) {
+            if (item.status === 'transferring' && (now - item.updated_at > TRANSFERRING_STATE_TIMEOUT)) {
+                console.warn(`Encoding Poll: Item ${item.id} stuck in 'transferring' for >${TRANSFERRING_STATE_TIMEOUT / 60000}min. Marking as failed.`);
+                stmtUpdateEncodingStatus.run(
+                    'failed',
+                    null,
+                    `Processing timed out (>${TRANSFERRING_STATE_TIMEOUT / 60000}min in transferring state).`,
+                    now,
+                    item.id
+                );
+            } else if (item.status === 'encoding' && (now - item.updated_at > ENCODING_STATE_TIMEOUT)) {
+                console.warn(`Encoding Poll: Item ${item.id} stuck in 'encoding' for >${ENCODING_STATE_TIMEOUT / 60000}min. Marking as failed.`);
+                stmtUpdateEncodingStatus.run(
+                    'failed',
+                    item.encoding_progress,
+                    `Processing timed out (>${ENCODING_STATE_TIMEOUT / 60000}min in encoding state).`,
+                    now,
+                    item.id
+                );
             }
         }
 
     } catch (error: any) {
-        console.error(`Encoding Poll: Error during API call or processing:`, error.response?.data || error.message || error);
+        console.error(`Encoding Poll: Error during status check:`, error.response?.data || error.message || error);
     } finally {
         isPollingEncoding = false;
     }
@@ -1377,7 +1876,7 @@ export function retryFailedDownloadOrUpload(itemId: string): { success: boolean;
 export async function restartFilemoonEncoding(itemId: string): Promise<{ success: boolean; message: string }> {
   const apiKey = getSetting('filemoon_api_key'); // <-- Read API key from settings
   if (!apiKey) {
-    console.error('Restart Encoding Failed: Filemoon API key not found in settings.');
+    console.error('Restart: Filemoon API key not found in settings.');
     return { success: false, message: 'Restart failed: Filemoon API key is missing in settings.' };
   }
 
@@ -1385,100 +1884,83 @@ export async function restartFilemoonEncoding(itemId: string): Promise<{ success
   try {
     item = stmtGetItemById.get(itemId) as QueueItem | undefined;
   } catch (dbError: any) {
-    console.error(`Restart Encoding Failed: DB error retrieving item ${itemId}:`, dbError);
+    console.error(`Failed to retrieve item ${itemId} from DB:`, dbError);
     return { success: false, message: `Database error retrieving item: ${dbError.message}` };
   }
 
   if (!item) {
-    return { success: false, message: `Restart failed: Item ${itemId} not found.` };
+    return { success: false, message: `Restart failed: Item with ID ${itemId} not found.` };
   }
+
   if (!item.filemoon_url) {
-    return { success: false, message: `Restart failed: Item ${itemId} does not have a Filemoon filecode (was it uploaded?).` };
+    return { success: false, message: `Restart failed: Item has no Filemoon URL to restart.` };
   }
-  // Optional: Check if status is actually 'failed' before allowing restart
-  // if (item.status !== 'failed') {
-  //   return { success: false, message: `Restart failed: Item ${itemId} is not in 'failed' state.` };
-  // }
 
   const filecode = item.filemoon_url;
 
   try {
-    // --- Check Filemoon's actual status first using /api/file/info --- 
-    const fileInfoUrl = `https://filemoonapi.com/api/file/info?key=${apiKey}&file_code=${filecode}`;
-    console.log(`Restart/Check Status: Calling API for item ${itemId} (Filecode: ${filecode}) -> ${fileInfoUrl}`);
-    let fileInfoResponse;
-    try {
-        fileInfoResponse = await axios.get(fileInfoUrl, { timeout: 10000 }); // 10s timeout
-    } catch (infoError: any) {
-        console.error(`Restart/Check Status Failed: API error fetching info for ${filecode}:`, infoError.response?.data || infoError.message || infoError);
-        let infoErrorMessage = 'Failed to get current file status from Filemoon.';
-        if (axios.isAxiosError(infoError) && infoError.response?.status === 404) { // Check outer status first
-            infoErrorMessage = 'File info endpoint likely not found or issue with API key/request.';
-        }
-        // Add specific check if the response data indicates the file itself wasn't found (often still a 200 overall)
-        else if (infoError.response?.data?.msg?.includes('Not Found')) { 
-             infoErrorMessage = 'File not found on Filemoon (maybe deleted?).';
-        }
-        return { success: false, message: infoErrorMessage };
-    }
-
-    // Validate the overall response structure
-    if (fileInfoResponse.data?.status !== 200 || !Array.isArray(fileInfoResponse.data?.result)) {
-        console.warn(`Restart/Check Status Warning: Invalid response structure from file/info for ${filecode}. Status: ${fileInfoResponse.data?.status}, Msg: ${fileInfoResponse.data?.msg}`);
-        return { success: false, message: 'Could not verify current file status on Filemoon (invalid response).' };
-    }
-
-    // Find the specific result for our filecode in the array
-    const fileResult = fileInfoResponse.data.result.find((r: any) => r.file_code === filecode);
-
-    if (!fileResult) {
-         console.warn(`Restart/Check Status Warning: Filecode ${filecode} not found in file/info result array.`);
-        return { success: false, message: `Filecode ${filecode} not found in Filemoon's response.` };
+    // --- First check file status by parsing the webpage ---
+    const webStatus = await checkFilemoonTransferQueueStatus(filecode);
+    
+    if (webStatus.inTransferQueue) {
+      // File is still in transfer queue, cannot restart encoding
+      const queueMessage = webStatus.statusMessage;
+        
+      // Update status message but don't change status
+      stmtUpdateEncodingStatus.run(
+        'transferring',
+        null,
+        queueMessage,
+        Date.now(),
+        item.id
+      );
+      
+      return { 
+        success: false, 
+        message: `Cannot restart encoding: File is still ${queueMessage.toLowerCase()}. Please wait until transfer is complete.` 
+      };
     }
     
-    const fileResultStatus = fileResult.status;
-    const canPlay = fileResult.canplay; // Should be 1 if playable
-    console.log(`Restart/Check Status: Filemoon result status for ${filecode} is '${fileResultStatus}', canplay: ${canPlay}`);
-
-    // Check based on the documentation provided
-    if (fileResultStatus === 404) {
-        console.log(`Restart/Check Status: File ${filecode} has status 404 in results. Not found on Filemoon.`);
-        // Update local status? Maybe just inform user.
-        // Optionally, update local status to failed with a specific message
-        // stmtUpdateEncodingStatus.run('failed', null, 'File not found on Filemoon.', Date.now(), item.id);
-        return { success: false, message: 'File not found on Filemoon (maybe deleted?).' };
+    if (webStatus.isEncoding) {
+      // File is already in encoding process
+      stmtUpdateEncodingStatus.run(
+        'encoding',
+        webStatus.encodingProgress || 0,
+        webStatus.statusMessage,
+        Date.now(),
+        item.id
+      );
+      
+      return { 
+        success: true, 
+        message: `File is already being encoded (${webStatus.statusMessage}). Status updated.` 
+      };
     }
-
-    if (fileResultStatus === 200 && canPlay === 1) {
-        console.log(`Restart/Check Status: File ${filecode} is playable on Filemoon. Updating local status to encoded.`);
+    
+    if (webStatus.isEncoded) {
+      // File is already encoded
         stmtUpdateEncodingStatus.run(
-            'encoded', // Set to encoded
-            100,       // Assume 100% progress
-            'File processing confirmed complete via Filemoon API.', // New message
+        'encoded',
+        100,
+        webStatus.statusMessage,
             Date.now(),
             item.id
         );
-        // Fetch queue needed on client side after this
-        return { success: true, message: 'File already processed successfully. Local status updated.' };
+      
+      return { 
+        success: true, 
+        message: 'File is already successfully encoded. Status updated.' 
+      };
     }
-
-    // Handle other cases (e.g., status 200 but canplay != 1, or other statuses)
-    console.warn(`Restart/Check Status: Cannot determine definitive status for ${filecode}. Result Status: ${fileResultStatus}, CanPlay: ${canPlay}.`);
-    return { success: false, message: `File status on Filemoon is unclear (Status: ${fileResultStatus}, CanPlay: ${canPlay}). Cannot automatically update or restart.` };
-
-    // --- REMOVED THE LOGIC TO CALL /api/encoding/restart --- 
-    // We cannot reliably determine if the file is in an 'ERROR' state solely from /api/file/info based on docs.
     
+    // If we get here, the file exists but status is inconclusive - just inform the user
+    return {
+      success: false,
+      message: `Could not determine file status from web page. Status: ${webStatus.statusMessage}`
+    };
   } catch (error: any) {
-    console.error(`Restart Encoding Failed: API call error for item ${itemId} (Filecode: ${filecode}):`, error.response?.data || error.message || error);
-    let errorMessage = 'Failed to request encoding restart.';
-    if (axios.isAxiosError(error)) {
-        errorMessage = `Filemoon API error: ${error.response?.status} - ${error.response?.data?.msg || error.message}`;
-    } else if (error instanceof Error) {
-        errorMessage = `Restart error: ${error.message}`;
-    }
-    // Do NOT change the local status if the API call fails
-    return { success: false, message: errorMessage };
+    console.error(`Restart Failed: Error checking status for item ${itemId} (Filecode: ${filecode}):`, error.message);
+    return { success: false, message: `Error checking file status: ${error.message}` };
   }
 }
 

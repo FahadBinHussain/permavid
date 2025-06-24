@@ -9,8 +9,9 @@ use uuid::Uuid;
 use chrono::Utc;
 use std::env;
 use dotenv::dotenv;
-use tokio_postgres::{NoTls, Client, Error as PgError};
-use deadpool_postgres::{Config, Pool, PoolError, Client as PoolClient};
+use deadpool_postgres::{Config, Pool, PoolError, Client as PoolClient, Runtime};
+use native_tls::{TlsConnector as NativeTlsConnector};
+use postgres_native_tls::MakeTlsConnector;
 
 // Shared database connection pool
 pub struct Database {
@@ -70,8 +71,15 @@ impl Database {
         config.url = Some(db_url);
         config.connect_timeout = Some(std::time::Duration::from_secs(5));
         
-        // Create the connection pool
-        let pool = config.create_pool(None, NoTls)?;
+        // Create TLS connector
+        let tls_connector = NativeTlsConnector::builder()
+            .danger_accept_invalid_certs(true) // For testing only - remove in production
+            .build()
+            .map_err(|e| e.to_string())?;
+        let tls = MakeTlsConnector::new(tls_connector);
+        
+        // Create the connection pool with TLS support
+        let pool = config.create_pool(Some(Runtime::Tokio1), tls)?;
         
         println!("Created Neon PostgreSQL connection pool");
         

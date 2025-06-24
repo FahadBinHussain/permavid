@@ -2245,6 +2245,8 @@ dependencies = [
  "home",
  "infer",
  "lazy_static",
+ "native-tls",
+ "postgres-native-tls",
  "regex",
  "reqwest",
  "serde",
@@ -2433,6 +2435,18 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide",
+]
+
+[[package]]
+name = "postgres-native-tls"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1f39498473c92f7b6820ae970382c1d83178a3454c618161cb772e8598d9f6f"
+dependencies = [
+ "native-tls",
+ "tokio",
+ "tokio-native-tls",
+ "tokio-postgres",
 ]
 
 [[package]]

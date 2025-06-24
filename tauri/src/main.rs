@@ -22,7 +22,6 @@ use regex::Regex;
 use lazy_static::lazy_static;
 use serde_json::Value as JsonValue;
 use reqwest;
-use futures_util::StreamExt;
 
 lazy_static! {
     // Regex to capture download percentage from yt-dlp output

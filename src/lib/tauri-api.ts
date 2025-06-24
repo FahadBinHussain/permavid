@@ -14,6 +14,8 @@ export interface QueueItem {
   added_at?: number;
   updated_at?: number;
   local_path?: string;
+  user_id?: string;
+  is_public?: boolean;
 }
 
 export interface AppSettings {

@@ -1,0 +1,53 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("NEON_DATABASE_URL")
+}
+
+model User {
+  id          String    @id @default(uuid())
+  username    String    @unique
+  email       String?   @unique
+  displayName String?   @map("display_name")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  lastLogin   DateTime? @map("last_login") @db.Timestamptz
+  queueItems  QueueItem[]
+  settings    Setting[]
+
+  @@map("users")
+}
+
+model QueueItem {
+  id              String   @id @default(uuid())
+  url             String
+  title           String?
+  thumbnailUrl    String?  @map("thumbnail_url")
+  status          String   @default("queued")
+  message         String?
+  localPath       String?  @map("local_path")
+  infoJsonPath    String?  @map("info_json_path")
+  filemoonUrl     String?  @map("filemoon_url")
+  filesVcUrl      String?  @map("files_vc_url")
+  encodingProgress Int?     @map("encoding_progress")
+  addedAt         BigInt   @map("added_at")
+  updatedAt       BigInt   @map("updated_at")
+  userId          String?  @map("user_id")
+  user            User?    @relation(fields: [userId], references: [id])
+
+  @@map("queue")
+}
+
+model Setting {
+  key     String  @id
+  value   String?
+  userId  String? @map("user_id")
+  user    User?   @relation(fields: [userId], references: [id])
+
+  @@map("settings")
+} 

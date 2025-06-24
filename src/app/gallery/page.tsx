@@ -112,24 +112,24 @@ export default function GalleryPage() {
       </Link>
       
       <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm flex flex-col">
-        <h1 className="text-3xl md:text-4xl font-bold mb-8">Encoded Video Gallery</h1>
+        <h1 className="text-3xl md:text-4xl font-bold mb-8">Video Archive</h1>
 
         {error && (
           <p className="mt-4 text-red-600 text-center mb-4">Error: {error}</p>
         )}
 
         <div className="w-full max-w-4xl">
-          <h2 className="text-2xl font-semibold mb-4">Archived Items ({galleryItems.length})</h2>
+          <h2 className="text-2xl font-semibold mb-4">All Archived Videos ({galleryItems.length})</h2>
 
           <div className="bg-white shadow overflow-hidden sm:rounded-md mt-4">
             <ul role="list" className="divide-y divide-gray-200">
               {isLoading ? (
                 <li className="px-4 py-4 sm:px-6 text-center text-gray-500">
-                  Loading archived items...
+                  Loading archived videos...
                 </li>
               ) : galleryItems.length === 0 ? (
                 <li className="px-4 py-4 sm:px-6 text-center text-gray-500">
-                  No encoded items found in the gallery yet.
+                  No encoded videos found in the archive yet.
                 </li>
               ) : (
                 galleryItems.map((item) => (

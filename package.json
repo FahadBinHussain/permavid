@@ -17,26 +17,35 @@
     "lint": "next lint",
     "dist": "pnpm build && electron-builder",
     "dist:tauri": "pnpm build:next && pnpm build:tauri",
-    "clean": "powershell -ExecutionPolicy Bypass -File ./cleanup.ps1"
+    "clean": "powershell -ExecutionPolicy Bypass -File ./cleanup.ps1",
+    "db:init": "node scripts/db-init.js",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push",
+    "prisma:studio": "prisma studio"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
+    "@neondatabase/serverless": "^1.0.1",
     "@next/font": "^14.2.5",
+    "@prisma/client": "^6.10.1",
     "@tauri-apps/api": "^1.5.3",
+    "@types/uuid": "^10.0.0",
     "axios": "^1.8.4",
-    "better-sqlite3": "^10.1.0",
+    "dotenv": "^16.5.0",
     "form-data": "^4.0.2",
     "next": "15.3.1",
+    "pg": "^8.16.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-hot-toast": "^2.5.2"
+    "react-hot-toast": "^2.5.2",
+    "uuid": "^11.1.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@tauri-apps/cli": "^1.5.11",
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20",
+    "@types/pg": "^8.15.4",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "concurrently": "^8.2.2",
@@ -45,6 +54,7 @@
     "eslint": "^9",
     "eslint-config-next": "15.3.1",
     "postcss": "^8.4.39",
+    "prisma": "^6.10.1",
     "tailwindcss": "^4.0.4",
     "typescript": "^5",
     "wait-on": "^7.2.0"

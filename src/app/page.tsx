@@ -36,6 +36,7 @@ import { useTauri } from '@/app/tauri-integration'; // Corrected import path
 import { QueueItem, AppSettings } from '@/lib/tauri-api'; // <-- Import types
 import { createEmptySettings } from '@/lib/settings-helper'; // Import factory function
 import { listen } from '@tauri-apps/api/event'; // <-- Import listen
+import { toast } from 'react-hot-toast';
 
 // --- Updated Icons with consistent size ---
 const iconClass = "h-4 w-4 inline-block mr-1.5 align-text-bottom"; // Consistent icon styling
@@ -306,8 +307,7 @@ export default function Home() {
     cancelItem: tauriCancelItem,
     restartEncoding: tauriRestartEncoding,
     openLink: tauriOpenLink,
-    getGalleryItems: tauriGetGalleryItems,
-    contributeIdentifier: tauriContributeIdentifier
+    getGalleryItems: tauriGetGalleryItems
   } = useTauri();
 
   const [url, setUrl] = useState('');
@@ -320,9 +320,6 @@ export default function Home() {
   const [restartingItemId, setRestartingItemId] = useState<string | null>(null);
   const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-
-  // Main state for contribution setting (used by useEffects etc.)
-  const [isContributionEnabled, setIsContributionEnabled] = useState<boolean>(false);
 
   // --- Settings State ---
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -374,121 +371,9 @@ export default function Home() {
     };
   }, [showFilterDropdown, showSortDropdown, showClearDropdown]);
 
-  // --- Load/Save contribution setting (localStorage) ---
-  useEffect(() => {
-    const storedValue = localStorage.getItem('isContributionEnabled');
-    if (storedValue !== null) {
-      setIsContributionEnabled(storedValue === 'true');
-    }
-  }, []); 
-
-  useEffect(() => {
-    // This now only saves the FINAL state to localStorage
-    localStorage.setItem('isContributionEnabled', String(isContributionEnabled));
-  }, [isContributionEnabled]);
-  
-  // --- Function to contribute existing items (remains the same) ---
-  const contributeExistingItems = useCallback(async () => {
-    console.log('[Retroactive Sync] Attempting to contribute existing encoded/gallery items...');
-    try {
-      // Fetch the gallery items directly
-      const result = await tauriGetGalleryItems();
-      
-      if (!result.success || !result.data) {
-        console.error('[Retroactive Sync] Failed to fetch gallery items:', result.message);
-        return; // Exit if fetch failed
-      }
-      
-      const encodedItems = result.data; // Use the gallery items directly
-      
-      console.log(`[Retroactive Sync] Fetched ${encodedItems.length} gallery items.`);
-
-      if (encodedItems.length > 0) {
-        console.log(`[Retroactive Sync] Found ${encodedItems.length} encoded items. Attempting contribution...`);
-        const contributionPromises = encodedItems.map(item => {
-          if (item.url) {
-            console.log(`[Retroactive Sync] Preparing contribution for: ${item.url}`);
-            return tauriContributeIdentifier(item.url).then(result => ({ url: item.url, ...result }));
-          } else {
-            console.warn(`[Retroactive Sync] Skipping item ${item.id} due to missing URL.`);
-            return Promise.resolve({ url: item.id || 'unknown', success: false, error: 'Missing URL' });
-          }
-        });
-
-        const results = await Promise.allSettled(contributionPromises);
-        results.forEach((result, index) => {
-          const item = encodedItems[index];
-          if (result.status === 'fulfilled') {
-            const data = result.value;
-            if (data.success) {
-              console.log(`[Retroactive Sync] Successfully contributed: ${data.url}`);
-            } else {
-              console.warn(`[Retroactive Sync] Failed contribution for ${data.url} (ID: ${item.id}): ${data.error}`);
-            }
-          } else {
-            console.error(`[Retroactive Sync] Error calling API for ${item.url} (ID: ${item.id}):`, result.reason);
-          }
-        });
-        console.log('[Retroactive Sync] Finished contribution attempt.');
-      } else {
-        console.log('[Retroactive Sync] No existing encoded items found in gallery to contribute.');
-      }
-    } catch (error) {
-      console.error('[Retroactive Sync] Error fetching gallery items:', error);
-    }
-  }, [tauriGetGalleryItems, tauriContributeIdentifier]);
-  
-  // --- Download complete event listener (remains the same) ---
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-
-    const setupListener = async () => {
-      try {
-        unlisten = await listen<DownloadCompletePayload>('download_complete', (event) => {
-          console.log('Received download_complete event:', event.payload);
-          const { originalUrl } = event.payload;
-          
-          // Check the current state value directly
-          if (isContributionEnabled && originalUrl) {
-            console.log(`Contribution enabled. Calling contributeIdentifier for ${originalUrl}`);
-            tauriContributeIdentifier(originalUrl)
-              .then(result => {
-                if (result.success) {
-                  console.log(`Successfully contributed identifier for ${originalUrl}`);
-                } else {
-                  console.warn(`Failed to contribute identifier for ${originalUrl}: ${result.error}`);
-                  // Optionally show a non-blocking notification to the user
-                }
-              })
-              .catch(err => {
-                console.error(`Error during contributeIdentifier call for ${originalUrl}:`, err);
-              });
-          } else {
-            console.log('Contribution not enabled or original URL missing, skipping.');
-          }
-        });
-        console.log('Successfully set up download_complete event listener.');
-      } catch (e) {
-        console.error('Failed to set up download_complete event listener:', e);
-      }
-    };
-
-    setupListener();
-
-    // Cleanup listener on component unmount
-    return () => {
-      if (unlisten) {
-        unlisten();
-        console.log('Cleaned up download_complete event listener.');
-      }
-    };
-  }, [isContributionEnabled, tauriContributeIdentifier]); // <-- Add isContributionEnabled and tauriContributeIdentifier as dependencies
-  // --- END ADDED ---
-
   const fetchQueue = useCallback(async () => {
     try {
       setIsRefreshing(true);
-      // console.log('Home: Fetching queue via Tauri...'); // Keep for now
       await tauriFetchQueueItems(); 
     } catch (fetchError: any) {
       console.error('Home: Error fetching queue via Tauri context:', fetchError);
@@ -499,7 +384,6 @@ export default function Home() {
 
   const fetchSettings = useCallback(async () => {
     try {
-      // console.log('Home: Fetching settings via Tauri...'); // Keep for now
       await tauriGetAppSettings(); 
     } catch (fetchError: any) {
       console.error('Home: Error fetching settings via Tauri context:', fetchError);
@@ -523,40 +407,38 @@ export default function Home() {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setIsLoading(true);
-    setMessage('');
-    setError('');
-
-    if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
-        setError('Invalid URL format');
-        setIsLoading(false);
-        return;
+    
+    if (!url.trim()) {
+      setError('Please enter a URL');
+      return;
     }
 
+    setIsLoading(true);
+    setError('');
+
     try {
+      // Use Tauri API for desktop app
       const newItem: Partial<QueueItem> = {
-          url: url,
-          status: 'queued',
+        url: url,
+        status: 'queued'
       };
-      const newItemId = await tauriAddToQueue(newItem as QueueItem); 
-      setMessage(`URL added to queue (ID: ${newItemId})`);
-      setUrl('');
-    } catch (submitError: any) {
-      const errorString = String(submitError);
-      let finalErrorMessage = 'Failed to add URL. Please check the URL or try again.';
-      const isAlreadyArchived = errorString.includes("has already been archived");
-      const isAlreadyInQueue = errorString.includes("already exists in the active queue");
-      if (isAlreadyArchived || isAlreadyInQueue) {
-        finalErrorMessage = errorString; 
-      } else {
-        console.error('Unexpected submission error object via Tauri:', submitError);
-        if (submitError?.message && submitError.message.toLowerCase() !== 'failed to add url') {
-          finalErrorMessage = submitError.message;
-        } else if (!errorString.toLowerCase().includes('failed to add url')) {
-          finalErrorMessage = errorString;
-        }
+      
+      try {
+        // addToQueue returns a string ID on success
+        const id = await tauriAddToQueue(newItem as QueueItem);
+        setUrl('');
+        // Refresh the queue
+        fetchQueue();
+        // Show success toast
+        toast.success('URL added to queue successfully');
+      } catch (apiError: any) {
+        setError(apiError.message || 'Failed to add URL to queue');
+        toast.error(apiError.message || 'Failed to add URL to queue');
       }
-      setError(finalErrorMessage);
+    } catch (error) {
+      console.error('Error adding URL to queue:', error);
+      setError('An error occurred while adding URL to queue');
+      toast.error('An error occurred while adding URL to queue');
     } finally {
       setIsLoading(false);
     }
@@ -664,35 +546,21 @@ export default function Home() {
   };
   
   // --- MODIFIED: Save Settings Logic ---
-  const handleSaveSettings = async (settingsToSave: AppSettings, contributionEnabledFromModal: boolean) => {
+  const handleSaveSettings = async (settingsToSave: AppSettings) => {
     setIsSavingSettings(true);
     setMessage('');
     setError('');
     
-    const contributionJustEnabled = contributionEnabledFromModal && !isContributionEnabled;
-    
     try {
-      // 1. Save the non-contribution settings via Tauri
-      console.log("Attempting to save non-contribution settings:", settingsToSave);
+      // Save the settings via Tauri
+      console.log("Saving settings:", settingsToSave);
       await tauriSaveSettings(settingsToSave); 
-      
-      // 2. Update the main contribution state
-      setIsContributionEnabled(contributionEnabledFromModal);
       
       setMessage('Settings saved successfully.');
       setShowSettingsModal(false); 
-      
-      // 3. Trigger retroactive sync *after* state update if needed
-      if (contributionJustEnabled) {
-        console.log("Contribution setting was enabled, triggering retroactive sync...");
-        contributeExistingItems();
-      }
-      
     } catch (saveError: any) {
       console.error('Error saving settings:', saveError);
       setError(`Failed to save settings: ${saveError.message || String(saveError)}`);
-      // Reset modal state potentially? Or leave modal open on error?
-      // For now, just log error, modal will close if Tauri call succeeds
     } finally {
       setIsSavingSettings(false);
     }
@@ -750,8 +618,7 @@ export default function Home() {
   const SettingsModal = () => {
     // Modal-specific state for settings
     const [modalSettings, setModalSettings] = useState<AppSettings>(createEmptySettings());
-    // Modal-specific state for the contribution checkbox
-    const [modalContributionEnabled, setModalContributionEnabled] = useState<boolean>(false);
+    // Modal-specific state for the contribution checkbox - no longer needed
     const [isLoadingSettings, setIsLoadingSettings] = useState(true); 
 
     // Load initial values into modal state when modal opens
@@ -760,12 +627,9 @@ export default function Home() {
       tauriGetAppSettings()
         .then(fetchedSettings => {
           setModalSettings(fetchedSettings || createEmptySettings());
-          // Initialize modal checkbox state from main state
-          setModalContributionEnabled(isContributionEnabled); 
         })
         .catch(err => {
           console.error("Error fetching settings for modal:", err);
-          setModalContributionEnabled(isContributionEnabled); // Ensure it syncs even on error
         })
         .finally(() => {
           setIsLoadingSettings(false);
@@ -775,7 +639,7 @@ export default function Home() {
     // Handle form submission in the modal
     const handleModalSubmit = (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-        // Prepare settings object (excluding contribution flag, as it's handled separately)
+        // Prepare settings object
         const { 
           filemoon_api_key,
           files_vc_api_key,
@@ -794,8 +658,8 @@ export default function Home() {
           upload_target
         };
         
-        // Call the main save handler, passing both settings and the modal's contribution state
-        handleSaveSettings(settingsToSave, modalContributionEnabled); 
+        // Call the main save handler with just the settings
+        handleSaveSettings(settingsToSave);
     }
     
     // Helper for input fields
@@ -890,22 +754,6 @@ export default function Home() {
                         </select>
                         <p className="mt-1 text-xs text-gray-500">Currently only Filemoon uploads are supported.</p>
                     </div>
-
-                    {/* Contribution Checkbox section */}
-                    <div className="mb-6 border-t border-gray-200 pt-4 mt-4">
-                        <p className="block text-sm font-medium text-gray-700 mb-2">Public Index (Optional)</p>
-                         {renderCheckbox(
-                            "contributeToIndex", 
-                            "Contribute successfully downloaded video IDs to the public index", 
-                            modalContributionEnabled, // Use modal state for checked
-                            (checked) => setModalContributionEnabled(checked) // Update modal state on change
-                         )}
-                         <p className="mt-1 text-xs text-gray-500">
-                            If enabled, the unique identifier (e.g., youtube:VIDEO_ID) of each successfully downloaded video will be sent to a public server. 
-                            This helps create a community index of archived content. Enabling this will also attempt to contribute identifiers from previously processed videos.
-                            <span className="font-semibold">Your identity is NOT sent or stored.</span>
-                         </p>
-                    </div>
                     
                     {/* Action buttons (submit now triggers handleModalSubmit) */}
                     <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
@@ -982,25 +830,21 @@ export default function Home() {
   };
 
   return (
-     <main className="flex min-h-screen flex-col items-center p-6 md:p-12 lg:p-16 bg-gray-100 dark:bg-gray-900"> {/* Subtle background */}
-       {/* Header section */}
-       <div className="w-full max-w-6xl mb-8 flex justify-between items-center">
-         <h1 className="text-2xl md:text-3xl font-bold text-gray-800 dark:text-gray-100">PermaVid Queue</h1>
-         <div className="flex items-center space-x-2">
+     <main className="flex min-h-screen flex-col items-center p-4 sm:p-6 md:p-8 bg-gray-50 dark:bg-gray-900">
+       <div className="w-full max-w-6xl flex justify-between items-center mb-6">
+         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">PermaVid</h1>
+         <div className="flex space-x-4">
            <Link 
-              href="/gallery" 
-              className="px-3 py-1.5 bg-purple-600 text-white rounded-md hover:bg-purple-700 text-xs font-medium transition-colors flex items-center space-x-1.5"
+             href="/archives" 
+             className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
            >
-               <SparklesIcon className="h-4 w-4"/> 
-               <span>View Gallery</span>
+             Archives
            </Link>
-           <button 
-              onClick={() => setShowSettingsModal(true)}
-              className="p-1.5 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors"
-              aria-label="Settings"
-              title="Settings"
+           <button
+             onClick={() => setShowSettingsModal(true)}
+             className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
            >
-               <Cog6ToothIcon className="h-5 w-5" />
+             Settings
            </button>
          </div>
        </div>
@@ -1009,7 +853,7 @@ export default function Home() {
         {/* Input Form Section */}
         <form onSubmit={handleSubmit} className="w-full bg-white dark:bg-gray-800 shadow-md rounded-lg p-6 mb-8">
           <label htmlFor="urlInput" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Add Video URL to Queue:
+            Add Video URL to Archive:
           </label>
           <div className="flex space-x-3 mt-1">
             <input
@@ -1056,7 +900,7 @@ export default function Home() {
           {/* Queue Header & Controls */}
           <div className="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex flex-wrap justify-between items-center gap-4">
             <h2 className="text-lg font-medium text-gray-900 dark:text-gray-100">
-              Download Queue ({displayedQueueItems.length} item{displayedQueueItems.length !== 1 ? 's' : ''})
+              Archive Queue ({displayedQueueItems.length} item{displayedQueueItems.length !== 1 ? 's' : ''})
             </h2>
 
             {/* Control buttons with dropdowns */}

@@ -1,35 +1,71 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import { PrismaClient } from '@prisma/client';
+import { v4 as uuidv4 } from 'uuid';
 
-// --- Configuration --- 
-const dbPath = path.resolve(process.cwd(), 'permavid_local.sqlite');
-
-// --- Database Setup --- 
-let db: Database.Database;
-
-try {
-  // Ensure the directory for the database exists (though CWD should always exist)
-  // Use synchronous fs operations here as it's part of critical startup
-  try { fs.mkdirSync(path.dirname(dbPath), { recursive: true }); } catch (e) { /* ignore */ }
-
-  db = new Database(dbPath, { /* verbose: console.log */ }); // Add verbose for debugging if needed
-
-  // Enable WAL mode for better concurrency 
-  db.pragma('journal_mode = WAL');
-  
-  console.log(`SQLite database initialized at: ${dbPath}`);
-
-} catch (dbError) {
-  console.error("------------------------------------------");
-  console.error("FATAL: Could not initialize SQLite database!");
-  console.error(dbError);
-  console.error(`Database path: ${dbPath}`);
-  console.error("Ensure the application has write permissions to this location.");
-  console.error("------------------------------------------");
-  // If the DB fails, throw an error to prevent the app from starting incorrectly
-  throw new Error(`Failed to initialize database: ${dbError}`);
+// Create a global singleton instance of Prisma
+declare global {
+  var prisma: PrismaClient | undefined;
 }
 
-// Export the initialized database connection
-export { db }; 
+// Use the existing instance or create a new one
+export const prisma = global.prisma || new PrismaClient();
+
+// Save the instance in development to prevent multiple instances
+if (process.env.NODE_ENV !== 'production') {
+  global.prisma = prisma;
+}
+
+// Helper function to execute SQL-like queries using Prisma
+export async function sql(strings: TemplateStringsArray, ...values: any[]) {
+  // This is a compatibility layer to support the existing SQL template literals
+  // Convert SQL-style queries to Prisma operations
+  const fullQuery = strings.reduce((acc, str, i) => {
+    return acc + str + (i < values.length ? `$${i + 1}` : '');
+  }, '');
+
+  try {
+    // Execute raw query using Prisma
+    const result = await prisma.$queryRawUnsafe(fullQuery, ...values);
+    return Array.isArray(result) ? result : [result];
+  } catch (error) {
+    console.error('Database query error:', error);
+    throw error;
+  }
+}
+
+// Initialize the database schema - no longer needed with Prisma
+// Kept for backward compatibility but now acts as a no-op
+async function initializeDatabase() {
+  try {
+    // Create default user for local usage if it doesn't exist
+    const localUser = await prisma.user.upsert({
+      where: { username: 'local' },
+      update: {},
+      create: {
+        id: 'local-user',
+        username: 'local',
+        email: 'local@permavid.app',
+        displayName: 'Local User',
+      },
+    });
+
+    console.log('Neon PostgreSQL database with Prisma initialized');
+  } catch (dbError) {
+    console.error("------------------------------------------");
+    console.error("FATAL: Could not initialize Neon PostgreSQL database with Prisma!");
+    console.error(dbError);
+    console.error("------------------------------------------");
+    throw new Error(`Failed to initialize database: ${dbError}`);
+  }
+}
+
+// Get current user ID (for attribution purposes only, not for data isolation)
+async function getCurrentUserId(): Promise<string> {
+  const localUser = await prisma.user.findUnique({
+    where: { username: 'local' },
+  });
+  
+  return localUser?.id || 'local-user';
+}
+
+// Export the prisma client and utility functions
+export { initializeDatabase, getCurrentUserId }; 

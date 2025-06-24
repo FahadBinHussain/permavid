@@ -1,124 +1,144 @@
-import { db } from '@/lib/db'; // Use path alias
-import Database from 'better-sqlite3';
-import path from 'path'; // Keep path import here for applyDefaultSettings
-
-// Define the structure for settings
-interface Settings {
-  [key: string]: string | undefined;
-}
-
-// --- Initialize Settings Table ---
-try {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-  `);
-  console.log('Settings table initialized successfully.');
-} catch (error) {
-  console.error('FATAL: Could not initialize settings table!', error);
-  throw new Error(`Failed to initialize settings table: ${error}`);
-}
-
-// --- Prepare Statements ---
-let stmtGetSetting: Database.Statement;
-let stmtSetSetting: Database.Statement;
-let stmtGetAllSettings: Database.Statement;
-
-try {
-  stmtGetSetting = db.prepare('SELECT value FROM settings WHERE key = ?');
-  // Use INSERT OR REPLACE (UPSERT) to handle both new and existing keys
-  stmtSetSetting = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
-  stmtGetAllSettings = db.prepare('SELECT key, value FROM settings');
-} catch (error) {
-    console.error('FATAL: Could not prepare settings statements!', error);
-    throw new Error(`Failed to prepare settings statements: ${error}`);
-}
-
-
-// --- Settings Functions ---
+import { sql, getCurrentUserId } from './db';
+import { AppSettings } from '@/lib/tauri-api';
 
 /**
  * Retrieves a specific setting value from the database.
  * @param key The key of the setting to retrieve.
- * @param defaultValue Optional default value if the setting is not found.
- * @returns The setting value or the default value (or undefined if no default).
+ * @param isGlobal Whether to retrieve a global setting (not user-specific).
+ * @returns The setting value or undefined if not found.
  */
-export function getSetting(key: string): string | undefined;
-export function getSetting<T extends string>(key: string, defaultValue: T): string;
-export function getSetting(key: string, defaultValue?: string): string | undefined {
+export async function getSetting(key: string, isGlobal: boolean = false): Promise<string | undefined> {
   try {
-    const result = stmtGetSetting.get(key) as { value: string } | undefined;
-    return result?.value ?? defaultValue;
-  } catch (error) {
-    console.error(`Error getting setting "${key}":`, error);
-    return defaultValue; // Return default on error
-  }
-}
-
-/**
- * Sets or updates a specific setting in the database.
- * @param key The key of the setting to set.
- * @param value The value to store for the setting.
- */
-export function setSetting(key: string, value: string): { success: boolean, message?: string } {
-  try {
-    // Basic validation: ensure value is a string
-    if (typeof value !== 'string') {
-        console.warn(`Attempted to set non-string value for setting "${key}". Coercing to string.`);
-        value = String(value);
+    let result;
+    
+    if (isGlobal) {
+      // Get global setting (no user_id)
+      result = await sql`SELECT value FROM settings WHERE key = ${key} AND user_id IS NULL`;
+    } else {
+      // Get user-specific setting
+      const userId = await getCurrentUserId();
+      result = await sql`SELECT value FROM settings WHERE key = ${key} AND user_id = ${userId}`;
     }
-    stmtSetSetting.run(key, value);
-    console.log(`Setting updated: ${key} = ${value.length > 50 ? value.substring(0, 50) + '...' : value}`); // Avoid logging huge values
-    return { success: true };
-  } catch (error: any) {
-    console.error(`Error setting setting "${key}":`, error);
-    return { success: false, message: error.message };
+    
+    return result.length > 0 ? result[0].value : undefined;
+  } catch (error) {
+    console.error(`Error retrieving setting ${key}:`, error);
+    return undefined;
   }
 }
 
 /**
- * Retrieves all settings from the database as an object.
- * @returns An object containing all key-value pairs from the settings table.
+ * Sets a setting value in the database.
+ * @param key The key of the setting to set.
+ * @param value The value to set.
+ * @param isGlobal Whether to set a global setting (not user-specific).
+ * @returns True if successful, false otherwise.
  */
-export function getAllSettings(): Settings {
-  const settings: Settings = {};
+export async function setSetting(key: string, value: string, isGlobal: boolean = false): Promise<boolean> {
   try {
-    const rows = stmtGetAllSettings.all() as { key: string; value: string }[];
-    rows.forEach(row => {
+    if (isGlobal) {
+      // Set global setting (no user_id)
+      await sql`
+        INSERT INTO settings (key, value, user_id) 
+        VALUES (${key}, ${value}, NULL)
+        ON CONFLICT (key) WHERE user_id IS NULL DO UPDATE SET value = ${value}
+      `;
+    } else {
+      // Set user-specific setting
+      const userId = await getCurrentUserId();
+      await sql`
+        INSERT INTO settings (key, value, user_id) 
+        VALUES (${key}, ${value}, ${userId})
+        ON CONFLICT (key, user_id) DO UPDATE SET value = ${value}
+      `;
+    }
+    return true;
+  } catch (error) {
+    console.error(`Error setting ${key}:`, error);
+    return false;
+  }
+}
+
+/**
+ * Retrieves all settings from the database for the current user.
+ * @param includeGlobal Whether to include global settings.
+ * @returns An object containing all settings as key-value pairs.
+ */
+export async function getAllSettings(includeGlobal: boolean = true): Promise<Record<string, string>> {
+  try {
+    const userId = await getCurrentUserId();
+    let results;
+    
+    if (includeGlobal) {
+      // Get both user-specific and global settings
+      results = await sql`
+        SELECT key, value FROM settings 
+        WHERE user_id = ${userId} OR user_id IS NULL
+      `;
+    } else {
+      // Get only user-specific settings
+      results = await sql`
+        SELECT key, value FROM settings 
+        WHERE user_id = ${userId}
+      `;
+    }
+    
+    const settings: Record<string, string> = {};
+    
+    for (const row of results) {
       settings[row.key] = row.value;
-    });
+    }
+    
     return settings;
   } catch (error) {
-    console.error('Error getting all settings:', error);
-    return {}; // Return empty object on error
+    console.error('Error retrieving all settings:', error);
+    return {};
   }
 }
 
-// --- Default Settings (Optional - Apply if not set) ---
-function applyDefaultSettings() {
-    const defaultDownloadDir = path.resolve(process.cwd(), 'downloads');
-    if (getSetting('download_directory') === undefined) {
-        setSetting('download_directory', defaultDownloadDir);
+/**
+ * Retrieves application settings from the database.
+ * @returns An AppSettings object with the current settings.
+ */
+export async function getAppSettings(): Promise<AppSettings> {
+  // Get user-specific settings
+  const userSettingsStr = await getSetting('user_settings');
+  let userSettings = {};
+  
+  if (userSettingsStr) {
+    try {
+      userSettings = JSON.parse(userSettingsStr);
+    } catch (error) {
+      console.error('Error parsing user settings:', error);
     }
-    if (getSetting('delete_after_upload') === undefined) {
-        setSetting('delete_after_upload', 'true'); // Store boolean as string 'true'/'false'
-    }
-    if (getSetting('filemoon_api_key') === undefined) {
-        // Try reading from env as initial default, but store empty if not found
-        setSetting('filemoon_api_key', process.env.FILEMOON_API_KEY || '');
-    }
-    // Add Files.vc API key setting
-    if (getSetting('files_vc_api_key') === undefined) {
-        // Try reading from env as initial default, but store empty if not found
-        setSetting('files_vc_api_key', process.env.FILES_VC_API_KEY || '');
-    }
-    // Add setting to control upload behavior
-    if (getSetting('upload_target') === undefined) {
-        setSetting('upload_target', 'filemoon'); // Options: 'filemoon', 'files_vc', 'both'
-    }
+  }
+  
+  // Default settings if not found
+  return {
+    filemoon_api_key: '',
+    files_vc_api_key: '',
+    download_directory: './downloads',
+    delete_after_upload: 'false',
+    auto_upload: 'false',
+    upload_target: 'none',
+    ...userSettings
+  };
 }
 
-// Apply defaults on module load
-applyDefaultSettings(); 
+/**
+ * Saves application settings to the database.
+ * @param settings The AppSettings object to save.
+ * @returns True if successful, false otherwise.
+ */
+export async function saveAppSettings(settings: AppSettings): Promise<boolean> {
+  try {
+    // Convert settings to JSON string
+    const settingsJson = JSON.stringify(settings);
+    
+    // Save as user settings
+    return await setSetting('user_settings', settingsJson);
+  } catch (error) {
+    console.error('Error saving application settings:', error);
+    return false;
+  }
+} 

@@ -1,3 +1,7 @@
+// NOTE: This file needs to be updated to use the Neon PostgreSQL connection instead of SQLite
+// The backend should connect to the same Neon database defined in NEON_DATABASE_URL
+// The functionality should be updated to use a PostgreSQL client instead of SQLite
+
 use rusqlite::{Connection, Result, params};
 use rusqlite::params_from_iter;
 use serde::{Deserialize, Serialize};

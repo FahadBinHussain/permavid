@@ -1,5 +1,7 @@
 # PermaVid
 
+PermaVid is a local video archiving tool that helps you download, manage, and archive videos from various sources.
+
 <img src="https://wakapi-qt1b.onrender.com/api/badge/fahad/interval:any/
 project:PermaVid" 
      alt="Wakapi Time Tracking" 
@@ -9,28 +11,51 @@ project:PermaVid"
 
 1. Install dependencies:
    ```bash
-   npm install
+   pnpm install
    ```
 2. Run the Tauri app in development mode:
    ```bash
-   npm run dev:tauri
+   pnpm run dev:tauri
    ```
 
 ---
+
+## Database Setup with Neon PostgreSQL
+
+This application uses Neon PostgreSQL as its database for archives. Follow these steps to set up your database:
+
+1. Create a free account at [Neon](https://neon.tech/)
+2. Create a new project and database
+3. Get your connection string from the Neon dashboard
+4. Create a `.env` file in the root of the project with the following content:
+   ```
+   NEON_DATABASE_URL=postgresql://[user]:[password]@[neon-hostname]/[dbname]
+   ```
+   Replace the placeholders with your actual connection details.
+5. Run the database initialization script:
+   ```
+   pnpm db:init
+   ```
+
+### Database Features
+
+- **User Identification**: Each archive is associated with a user ID, allowing tracking of who archived which link
+- **Archive Access**: Archives can be accessed by users
+- **User-specific Settings**: Settings are stored per-user
 
 ## Development
 
 ### Next.js (Web Only)
 To run the Next.js app in your browser:
 ```bash
-npm run dev
+pnpm run dev
 ```
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ### Electron (Desktop)
 To run the Electron app in development mode:
 ```bash
-npm run dev:electron
+pnpm run dev:electron
 ```
 
 ---
@@ -39,15 +64,15 @@ npm run dev:electron
 
 - **Tauri:**
   ```bash
-  npm run build:tauri
+  pnpm run build:tauri
   ```
 - **Electron:**
   ```bash
-  npm run build && npm run dist
+  pnpm run build && pnpm run dist
   ```
 - **Next.js:**
   ```bash
-  npm run build && npm start
+  pnpm run build && pnpm start
   ```
 
 ---
@@ -60,7 +85,20 @@ npm run dev:electron
 
 ---
 
+## API Endpoints
+
+### Archives
+- `GET /api/archives` - Get all archives
+- `GET /api/archives/[id]` - Get details of a specific archive
+- `POST /api/archives/add` - Add a new archive
+
+---
+
 ## Learn More
 - [Tauri Documentation](https://tauri.app/)
 - [Next.js Documentation](https://nextjs.org/docs)
 - [Electron Documentation](https://www.electronjs.org/docs)
+
+## License
+
+MIT

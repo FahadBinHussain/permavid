@@ -346,20 +346,68 @@ async fn retry_item(id: String, app_state: State<'_, AppState>) -> Result<Respon
 // --- ADDED: Command to cancel an item ---
 #[tauri::command]
 async fn cancel_item(id: String, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
-    let db = app_state.db.lock().unwrap();
-    match db.get_item_by_id(&id) {
-        Ok(Some(_)) => {
-            match db.update_item_status(&id, "cancelled", Some("Cancelled by user".to_string())) {
-                Ok(_) => Ok(Response {
-                    success: true,
-                    message: "Item cancelled successfully".to_string(),
-                    data: None,
-                }),
-                Err(e) => Err(format!("Database error updating status to cancelled: {}", e)),
+    // First, get the item to check its status
+    let current_status = {
+        let db = app_state.db.lock().unwrap();
+        match db.get_item_by_id(&id) {
+            Ok(Some(item)) => item.status.clone(),
+            Ok(None) => return Err(format!("Cancel failed: Item {} not found.", id)),
+            Err(e) => return Err(format!("Database error checking item existence: {}", e)),
+        }
+    };
+
+    // If the item is downloading, try to kill the process first
+    if current_status == "downloading" {
+        // On Windows, we need to kill the yt-dlp process
+        if cfg!(target_os = "windows") {
+            use std::process::Command;
+            
+            println!("Attempting to kill yt-dlp processes for item {}", id);
+            
+            // Try to kill all yt-dlp processes
+            let kill_result = Command::new("taskkill")
+                .args(&["/IM", "yt-dlp.exe", "/F", "/T"])
+                .output();
+                
+            match kill_result {
+                Ok(output) => {
+                    if output.status.success() {
+                        println!("Successfully terminated yt-dlp processes");
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        println!("Failed to terminate yt-dlp processes: {}", stderr);
+                    }
+                },
+                Err(e) => {
+                    println!("Error executing taskkill command: {}", e);
+                }
+            }
+            
+            // Also try to kill any related ffmpeg processes
+            let ffmpeg_kill_result = Command::new("taskkill")
+                .args(&["/IM", "ffmpeg.exe", "/F", "/T"])
+                .output();
+                
+            if let Ok(output) = ffmpeg_kill_result {
+                if output.status.success() {
+                    println!("Successfully terminated ffmpeg processes");
+                }
             }
         }
-        Ok(None) => Err(format!("Cancel failed: Item {} not found.", id)),
-        Err(e) => Err(format!("Database error checking item existence: {}", e)),
+    }
+
+    // Now update the database status
+    let db = app_state.db.lock().unwrap();
+    match db.update_item_status(&id, "cancelled", Some("Cancelled by user".to_string())) {
+        Ok(_) => {
+            println!("Item {} marked as cancelled in database", id);
+            Ok(Response {
+                success: true,
+                message: "Item cancelled successfully".to_string(),
+                data: None,
+            })
+        },
+        Err(e) => Err(format!("Database error updating status to cancelled: {}", e)),
     }
 }
 // --- END ADDED Command ---

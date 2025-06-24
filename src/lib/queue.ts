@@ -320,7 +320,7 @@ async function processQueue() {
     // Start the download (pass the specific downloadDir)
     const downloadPromise = downloadVideo(itemToProcess, downloadDir);
 
-    // Set up a cancellation check interval that runs every 2 seconds during download
+    // Set up a cancellation check interval that runs every 500ms during download
     const cancellationCheckIntervalId = setInterval(() => {
       try {
         // Check if the item's status has changed to 'cancelled' during download
@@ -334,17 +334,40 @@ async function processQueue() {
             const { execSync } = require('child_process');
             execSync('taskkill /IM yt-dlp.exe /F /T', { encoding: 'utf8', stdio: 'pipe' });
             console.log('Terminated yt-dlp processes during cancellation check');
+            
+            // Also try to terminate any ffmpeg processes that might have been spawned
+            try {
+              execSync('taskkill /IM ffmpeg.exe /F /T', { encoding: 'utf8', stdio: 'pipe' });
+              console.log('Terminated ffmpeg processes during cancellation check');
+            } catch (ffmpegKillError) {
+              // It's okay if this fails - there might not be any ffmpeg processes
+              console.log('No ffmpeg processes found to terminate during cancellation');
+            }
           } catch (killError) {
-            // It's okay if this fails
+            console.error('Failed to terminate processes during cancellation:', killError);
           }
 
           // Clear the interval since we've detected cancellation
           clearInterval(cancellationCheckIntervalId);
+          
+          // Terminate active download process if we have a reference
+          if (activeDownloads.has(itemId)) {
+            try {
+              const downloadProcess = activeDownloads.get(itemId);
+              if (downloadProcess) {
+                downloadProcess.kill('SIGKILL');
+                console.log(`Sent SIGKILL to process for item ${itemId} during cancellation check`);
+              }
+              activeDownloads.delete(itemId);
+            } catch (processKillError) {
+              console.error(`Failed to kill process for ${itemId} during cancellation check:`, processKillError);
+            }
+          }
         }
       } catch (checkError) {
         console.error(`Error checking cancellation status for ${itemId}:`, checkError);
       }
-    }, 2000); // Check every 2 seconds
+    }, 500); // Check every 500ms for better responsiveness
 
     // Wait for download to complete
     const result = await downloadPromise;
@@ -1540,6 +1563,30 @@ export function cancelItem(itemId: string): { success: boolean; message: string 
       }
     } catch (updateError: any) {
       console.error(`Cancel Failed: Error marking downloading item ${itemId} as cancelled:`, updateError);
+      return { success: false, message: `Database error cancelling item: ${updateError.message}` };
+    }
+  } else if (currentStatus === 'uploading') {
+    // Handle cancellation of uploads - currently can just mark as cancelled in DB
+    try {
+      const result = stmtUpdateStatus.run(
+        'cancelled',
+        'Cancelled by user during upload.',
+        item.title,
+        item.local_path,
+        item.info_json_path,
+        Date.now(),
+        itemId
+      );
+      
+      if (result.changes > 0) {
+        console.log(`Cancelled uploading item ${itemId}.`);
+        return { success: true, message: 'Upload cancelled.' };
+      } else {
+        console.warn(`Tried to cancel uploading item ${itemId}, but it wasn't found or status changed.`);
+        return { success: false, message: 'Item not found or status changed.' };
+      }
+    } catch (updateError: any) {
+      console.error(`Cancel Failed: Error marking uploading item ${itemId} as cancelled:`, updateError);
       return { success: false, message: `Database error cancelling item: ${updateError.message}` };
     }
   } else {

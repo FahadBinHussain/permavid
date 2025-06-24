@@ -334,6 +334,44 @@ export default function Home() {
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
   const [showSortDropdown, setShowSortDropdown] = useState(false);
 
+  // Refs for dropdown handling
+  const filterButtonRef = React.useRef<HTMLButtonElement>(null);
+  const sortButtonRef = React.useRef<HTMLButtonElement>(null);
+  const clearButtonRef = React.useRef<HTMLButtonElement>(null);
+
+  // Handle clicks outside of dropdowns to close them
+  useEffect(() => {
+    if (!showFilterDropdown && !showSortDropdown && !showClearDropdown) return;
+    
+    const handleClickOutside = (e: MouseEvent) => {
+      // Check if click was inside any of the active dropdowns or their toggle buttons
+      const target = e.target as Node;
+      
+      // Handle Filter dropdown
+      const isFilterDropdownClick = filterButtonRef.current?.contains(target);
+      if (showFilterDropdown && !isFilterDropdownClick) {
+        setShowFilterDropdown(false);
+      }
+      
+      // Handle Sort dropdown
+      const isSortDropdownClick = sortButtonRef.current?.contains(target);
+      if (showSortDropdown && !isSortDropdownClick) {
+        setShowSortDropdown(false);
+      }
+      
+      // Handle Clear dropdown
+      const isClearDropdownClick = clearButtonRef.current?.contains(target);
+      if (showClearDropdown && !isClearDropdownClick) {
+        setShowClearDropdown(false);
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showFilterDropdown, showSortDropdown, showClearDropdown]);
+
   // --- Load/Save contribution setting (localStorage) ---
   useEffect(() => {
     const storedValue = localStorage.getItem('isContributionEnabled');
@@ -900,6 +938,40 @@ export default function Home() {
     </button>
   );
 
+  // New component for creating consistent dropdown menus
+  const DropdownMenu = ({ 
+    isOpen, 
+    onClose, 
+    children,
+    alignment = 'right' 
+  }: { 
+    isOpen: boolean;
+    onClose: () => void; 
+    children: React.ReactNode;
+    alignment?: 'right' | 'left';
+  }) => {
+    if (!isOpen) return null;
+    
+    return (
+      <div 
+        className={`absolute ${alignment === 'right' ? 'right-0' : 'left-0'} mt-2 w-56 rounded-md shadow-2xl bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 focus:outline-none border border-gray-200 dark:border-gray-700`}
+        style={{ 
+          position: 'absolute',
+          top: '100%',
+          maxHeight: '80vh', // Use viewport height to avoid being cut off
+          overflowY: 'auto',
+          zIndex: 50,
+          boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="py-1" role="menu" aria-orientation="vertical">
+          {children}
+        </div>
+      </div>
+    );
+  };
+
   return (
      <main className="flex min-h-screen flex-col items-center p-6 md:p-12 lg:p-16 bg-gray-100 dark:bg-gray-900"> {/* Subtle background */}
        {/* Header section */}
@@ -970,132 +1042,170 @@ export default function Home() {
            </div>
         )}
 
-        {/* Queue List Section */}
-        <div className="w-full bg-white dark:bg-gray-800 shadow-md overflow-hidden sm:rounded-lg">
+        {/* Queue List Section - completely restructured for proper dropdown handling */}
+        <div className="w-full bg-white dark:bg-gray-800 shadow-md sm:rounded-lg" style={{ overflow: 'visible' }}>
           {/* Queue Header & Controls */}
-          <div className="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
-             <h2 className="text-lg font-medium text-gray-900 dark:text-gray-100">
-               Download Queue ({displayedQueueItems.length} item{displayedQueueItems.length !== 1 ? 's' : ''})
-             </h2>
-             <div className="flex items-center space-x-2">
-                 {/* Filter Dropdown */}
-                 <div className="relative">
-                     <button
-                         onClick={() => setShowFilterDropdown(!showFilterDropdown)}
-                         className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center space-x-1"
-                     >
-                         <AdjustmentsHorizontalIcon className="h-4 w-4"/>
-                         <span>Filter: <span className="capitalize font-semibold">{filterStatus}</span></span>
-                         <ChevronDownIcon className="h-3 w-3 ml-1" />
-                     </button>
-                     {showFilterDropdown && (
-                         <div 
-                             className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
-                             onMouseLeave={() => setShowFilterDropdown(false)}
-                         >
-                             <div className="py-1" role="menu" aria-orientation="vertical">
-                                 {(['all', 'queued', 'downloading', 'completed', 'uploading', 'transferring', 'encoding', 'encoded', 'failed', 'cancelled'] as FilterStatus[]).map(status => (
-                                     <DropdownItem
-                                         key={status}
-                                         onClick={() => { setFilterStatus(status); setShowFilterDropdown(false); }}
-                                         isActive={filterStatus === status}
-                                     >
-                                         <div className="flex items-center">
-                                           {icons[status] || <span className="w-4 h-4 mr-1.5"></span>} {/* Placeholder for spacing if no icon */}
-                                           <span className="capitalize">{status}</span>
-                                         </div>
-                                     </DropdownItem>
-                                 ))}
-                             </div>
-                         </div>
-                     )}
-                 </div>
-                 {/* Sort Dropdown */}
-                 <div className="relative">
-                      <button
-                          onClick={() => setShowSortDropdown(!showSortDropdown)}
-                          className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center space-x-1"
-                      >
-                          <ArrowsUpDownIcon className="h-4 w-4"/>
-                          <span>Sort</span>
-                          <ChevronDownIcon className="h-3 w-3 ml-1" />
-                      </button>
-                      {showSortDropdown && (
-                          <div
-                              className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
-                              onMouseLeave={() => setShowSortDropdown(false)}
-                          >
-                              <div className="py-1" role="menu" aria-orientation="vertical">
-                                  <DropdownItem onClick={() => { setSortKey('added_at_desc'); setShowSortDropdown(false); }} isActive={sortKey === 'added_at_desc'}>Added (Newest)</DropdownItem>
-                                  <DropdownItem onClick={() => { setSortKey('added_at_asc'); setShowSortDropdown(false); }} isActive={sortKey === 'added_at_asc'}>Added (Oldest)</DropdownItem>
-                                  <DropdownItem onClick={() => { setSortKey('title_asc'); setShowSortDropdown(false); }} isActive={sortKey === 'title_asc'}>Title (A-Z)</DropdownItem>
-                                  <DropdownItem onClick={() => { setSortKey('title_desc'); setShowSortDropdown(false); }} isActive={sortKey === 'title_desc'}>Title (Z-A)</DropdownItem>
-                                  <DropdownItem onClick={() => { setSortKey('status'); setShowSortDropdown(false); }} isActive={sortKey === 'status'}>Status</DropdownItem>
-                              </div>
-                          </div>
-                      )}
-                  </div>
-                  {/* Clear Dropdown */}
-                  <div className="relative">
-                      <button
-                          onClick={() => setShowClearDropdown(!showClearDropdown)}
-                          disabled={isClearing}
-                          className="px-3 py-1.5 text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 transition-colors flex items-center space-x-1"
-                      >
-                         <TrashIcon className="h-4 w-4"/>
-                         <span>Clear</span>
-                          <ChevronDownIcon className="h-3 w-3 ml-1" />
-                      </button>
-                      {showClearDropdown && (
-                          <div
-                              className="origin-top-right absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-white dark:bg-gray-700 ring-1 ring-black ring-opacity-5 focus:outline-none z-20"
-                              onMouseLeave={() => setShowClearDropdown(false)}
-                          >
-                              <div className="py-1" role="menu" aria-orientation="vertical">
-                                  {/* Updated clear options */}
-                                  <DropdownItem onClick={() => handleClearQueue('completed')}>Clear Downloaded</DropdownItem>
-                                  <DropdownItem onClick={() => handleClearQueue('encoded')}>Clear Encoded</DropdownItem>
-                                  <DropdownItem onClick={() => handleClearQueue('failed')}>Clear Failed</DropdownItem>
-                                  <DropdownItem onClick={() => handleClearQueue('cancelled')}>Clear Cancelled</DropdownItem>
-                                  <div className="border-t border-gray-200 dark:border-gray-600 my-1"></div>
-                                  <DropdownItem onClick={() => handleClearQueue('all_finished')}>
-                                    <span className="text-red-600 font-medium">Clear All Finished</span>
-                                  </DropdownItem>
-                              </div>
-                          </div>
-                      )}
-                  </div>
-             </div>
-           </div>
+          <div className="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex flex-wrap justify-between items-center gap-4">
+            <h2 className="text-lg font-medium text-gray-900 dark:text-gray-100">
+              Download Queue ({displayedQueueItems.length} item{displayedQueueItems.length !== 1 ? 's' : ''})
+            </h2>
 
-           {/* Queue List */}
-           <ul role="list" className="divide-y divide-gray-200 dark:divide-gray-700">
-             {contextQueue.length === 0 ? ( // Check original context queue length for empty state
-               <li className="px-4 py-10 sm:px-6 text-center text-gray-500 dark:text-gray-400">
-                 The queue is empty. Add a URL above to get started!
-               </li>
-             ) : displayedQueueItems.length === 0 ? (
+            {/* Control buttons with dropdowns */}
+            <div className="flex flex-wrap items-center gap-3 relative" style={{ zIndex: 40 }}>
+              {/* Filter Dropdown - completely rebuilt with proper positioning */}
+              <div className="relative inline-block" style={{ position: 'relative' }}>
+                <button
+                  ref={filterButtonRef}
+                  onClick={() => {
+                    setShowFilterDropdown(!showFilterDropdown);
+                    setShowSortDropdown(false);
+                    setShowClearDropdown(false);
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center space-x-1"
+                >
+                  <AdjustmentsHorizontalIcon className="h-4 w-4"/>
+                  <span>Filter: <span className="capitalize font-semibold">{filterStatus}</span></span>
+                  <ChevronDownIcon className="h-3 w-3 ml-1" />
+                </button>
+                
+                {showFilterDropdown && (
+                  <DropdownMenu 
+                    isOpen={showFilterDropdown} 
+                    onClose={() => setShowFilterDropdown(false)} 
+                  >
+                    {(['all', 'queued', 'downloading', 'completed', 'uploading', 'transferring', 'encoding', 'encoded', 'failed', 'cancelled'] as FilterStatus[]).map(status => (
+                      <DropdownItem
+                        key={status}
+                        onClick={() => { 
+                          setFilterStatus(status); 
+                          setShowFilterDropdown(false); 
+                        }}
+                        isActive={filterStatus === status}
+                      >
+                        <div className="flex items-center">
+                          {icons[status] || <span className="w-4 h-4 mr-1.5"></span>}
+                          <span className="capitalize">{status}</span>
+                        </div>
+                      </DropdownItem>
+                    ))}
+                  </DropdownMenu>
+                )}
+              </div>
+
+              {/* Sort Dropdown - completely rebuilt with proper positioning */}
+              <div className="relative inline-block" style={{ position: 'relative' }}>
+                <button
+                  ref={sortButtonRef}
+                  onClick={() => {
+                    setShowSortDropdown(!showSortDropdown);
+                    setShowFilterDropdown(false);
+                    setShowClearDropdown(false);
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center space-x-1"
+                >
+                  <ArrowsUpDownIcon className="h-4 w-4"/>
+                  <span>Sort</span>
+                  <ChevronDownIcon className="h-3 w-3 ml-1" />
+                </button>
+                
+                {showSortDropdown && (
+                  <DropdownMenu 
+                    isOpen={showSortDropdown} 
+                    onClose={() => setShowSortDropdown(false)} 
+                  >
+                    <DropdownItem onClick={() => { setSortKey('added_at_desc'); setShowSortDropdown(false); }} isActive={sortKey === 'added_at_desc'}>
+                      Added (Newest)
+                    </DropdownItem>
+                    <DropdownItem onClick={() => { setSortKey('added_at_asc'); setShowSortDropdown(false); }} isActive={sortKey === 'added_at_asc'}>
+                      Added (Oldest)
+                    </DropdownItem>
+                    <DropdownItem onClick={() => { setSortKey('title_asc'); setShowSortDropdown(false); }} isActive={sortKey === 'title_asc'}>
+                      Title (A-Z)
+                    </DropdownItem>
+                    <DropdownItem onClick={() => { setSortKey('title_desc'); setShowSortDropdown(false); }} isActive={sortKey === 'title_desc'}>
+                      Title (Z-A)
+                    </DropdownItem>
+                    <DropdownItem onClick={() => { setSortKey('status'); setShowSortDropdown(false); }} isActive={sortKey === 'status'}>
+                      Status
+                    </DropdownItem>
+                  </DropdownMenu>
+                )}
+              </div>
+
+              {/* Clear Dropdown - completely rebuilt with proper positioning */}
+              <div className="relative inline-block" style={{ position: 'relative' }}>
+                <button
+                  ref={clearButtonRef}
+                  onClick={() => {
+                    setShowClearDropdown(!showClearDropdown);
+                    setShowFilterDropdown(false);
+                    setShowSortDropdown(false);
+                  }}
+                  disabled={isClearing}
+                  className="px-3 py-1.5 text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 transition-colors flex items-center space-x-1"
+                >
+                  <TrashIcon className="h-4 w-4"/>
+                  <span>Clear</span>
+                  <ChevronDownIcon className="h-3 w-3 ml-1" />
+                </button>
+                
+                {showClearDropdown && (
+                  <DropdownMenu 
+                    isOpen={showClearDropdown} 
+                    onClose={() => setShowClearDropdown(false)} 
+                  >
+                    <DropdownItem onClick={() => handleClearQueue('completed')}>
+                      Clear Downloaded
+                    </DropdownItem>
+                    <DropdownItem onClick={() => handleClearQueue('encoded')}>
+                      Clear Encoded
+                    </DropdownItem>
+                    <DropdownItem onClick={() => handleClearQueue('failed')}>
+                      Clear Failed
+                    </DropdownItem>
+                    <DropdownItem onClick={() => handleClearQueue('cancelled')}>
+                      Clear Cancelled
+                    </DropdownItem>
+                    <div className="border-t border-gray-200 dark:border-gray-600 my-1"></div>
+                    <DropdownItem onClick={() => handleClearQueue('all_finished')}>
+                      <span className="text-red-600 font-medium">Clear All Finished</span>
+                    </DropdownItem>
+                  </DropdownMenu>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Queue List - with proper z-index handling */}
+          <div className="relative" style={{ overflow: 'visible' }}>
+            <ul role="list" className="divide-y divide-gray-200 dark:divide-gray-700">
+              {contextQueue.length === 0 ? (
+                <li className="px-4 py-10 sm:px-6 text-center text-gray-500 dark:text-gray-400">
+                  The queue is empty. Add a URL above to get started!
+                </li>
+              ) : displayedQueueItems.length === 0 ? (
                 <li className="px-4 py-10 sm:px-6 text-center text-gray-500 dark:text-gray-400">
                   No items match the current filter (<span className="capitalize font-medium">{filterStatus}</span>).
                 </li>
-             ) : (
-               displayedQueueItems.map((item) => (
-                 <QueueListItem
-                   key={item.id ?? item.url} // Use URL as fallback key
-                   item={item}
-                   uploadingItemId={uploadingItemId}
-                   cancellingItemId={cancellingItemId}
-                   restartingItemId={restartingItemId}
-                   retryingItemId={retryingItemId}
-                   onUpload={handleUpload}
-                   onCancel={handleCancel}
-                   onRetry={handleRetry}
-                   onRestartEncoding={handleRestartEncoding}
-                   onOpenLink={handleOpenLink}
-                 />
-               ))
-             )}
-           </ul>
+              ) : (
+                displayedQueueItems.map((item) => (
+                  <QueueListItem
+                    key={item.id ?? item.url}
+                    item={item}
+                    uploadingItemId={uploadingItemId}
+                    cancellingItemId={cancellingItemId}
+                    restartingItemId={restartingItemId}
+                    retryingItemId={retryingItemId}
+                    onUpload={handleUpload}
+                    onCancel={handleCancel}
+                    onRetry={handleRetry}
+                    onRestartEncoding={handleRestartEncoding}
+                    onOpenLink={handleOpenLink}
+                  />
+                ))
+              )}
+            </ul>
+          </div>
         </div>
       </div>
 

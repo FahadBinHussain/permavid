@@ -6,17 +6,18 @@
   "homepage": ".",
   "scripts": {
     "dev:next": "next dev --turbopack",
-    "dev": "concurrently \"npm:dev:next\" \"npm:dev:electron\"",
+    "dev": "concurrently \"pnpm dev:next\" \"pnpm dev:electron\"",
     "dev:electron": "wait-on http://localhost:3000 && tsc electron/main.ts electron/preload.ts --outDir electron/dist --module commonjs --target es2018 --esModuleInterop && electron .",
     "dev:tauri": "tauri dev",
     "build:next": "set ESLINT_SKIP_DEV_OVERLAY=true && next build --no-lint",
     "build:electron": "tsc electron/main.ts electron/preload.ts --outDir electron/dist --module commonjs --target es2018 --esModuleInterop",
-    "build": "npm run build:next && npm run build:electron",
+    "build": "pnpm build:next && pnpm build:electron",
     "build:tauri": "tauri build",
     "start": "next start",
     "lint": "next lint",
-    "dist": "npm run build && electron-builder",
-    "dist:tauri": "npm run build:next && npm run build:tauri"
+    "dist": "pnpm build && electron-builder",
+    "dist:tauri": "pnpm build:next && pnpm build:tauri",
+    "clean": "powershell -ExecutionPolicy Bypass -File ./cleanup.ps1"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",

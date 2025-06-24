@@ -54,3 +54,6 @@ prompt.md
 
 # Prisma Generated Client (Index Server)
 permavid-index-server/prisma/generated/
+# Build output
+electron/dist/
+# Downloaded content

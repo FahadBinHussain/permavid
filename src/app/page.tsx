@@ -28,6 +28,7 @@ import {
   AdjustmentsHorizontalIcon, // Filter button icon
   ArrowsUpDownIcon, // Sort button icon
   SparklesIcon, // Gallery icon
+  ArrowPathRoundedSquareIcon, // For refresh button
 } from '@heroicons/react/24/solid'; 
 import { invoke } from '@tauri-apps/api/tauri'; // Import invoke
 import { open } from '@tauri-apps/api/shell'; // Import open for external links
@@ -318,6 +319,7 @@ export default function Home() {
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
   const [restartingItemId, setRestartingItemId] = useState<string | null>(null);
   const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Main state for contribution setting (used by useEffects etc.)
   const [isContributionEnabled, setIsContributionEnabled] = useState<boolean>(false);
@@ -485,10 +487,13 @@ export default function Home() {
 
   const fetchQueue = useCallback(async () => {
     try {
+      setIsRefreshing(true);
       // console.log('Home: Fetching queue via Tauri...'); // Keep for now
       await tauriFetchQueueItems(); 
     } catch (fetchError: any) {
       console.error('Home: Error fetching queue via Tauri context:', fetchError);
+    } finally {
+      setIsRefreshing(false);
     }
   }, [tauriFetchQueueItems]);
 
@@ -571,7 +576,11 @@ export default function Home() {
       }
       
       await tauriClearItems(statusTypes); 
-      setMessage(`Successfully requested clearing of ${type.replace('_', ' ')} items.`);
+      
+      // Force refresh the queue items after clearing
+      await fetchQueue();
+      
+      setMessage(`Successfully cleared ${type.replace('_', ' ')} items.`);
       setShowClearDropdown(false); // Close dropdown after action
       
     } catch (clearError: any) {
@@ -1052,6 +1061,21 @@ export default function Home() {
 
             {/* Control buttons with dropdowns */}
             <div className="flex flex-wrap items-center gap-3 relative" style={{ zIndex: 40 }}>
+              {/* Refresh Button */}
+              <button
+                onClick={() => {
+                  fetchQueue();
+                  setMessage('Queue refreshed');
+                  setTimeout(() => setMessage(''), 2000); // Clear message after 2 seconds
+                }}
+                disabled={isRefreshing}
+                className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center space-x-1 disabled:opacity-50"
+                title="Refresh Queue"
+              >
+                <ArrowPathRoundedSquareIcon className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`}/>
+                <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+              </button>
+              
               {/* Filter Dropdown - completely rebuilt with proper positioning */}
               <div className="relative inline-block" style={{ position: 'relative' }}>
                 <button

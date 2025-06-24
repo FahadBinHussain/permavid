@@ -14,47 +14,54 @@ use tauri::{Manager, State};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use reqwest::multipart;
-use tokio::fs::File;
-use tokio::time::sleep;
-use tokio_util::codec::{BytesCodec, FramedRead};
-use futures_util::stream::TryStreamExt;
-use bytes::Bytes;
 use std::process::Stdio;
+use tokio::time::sleep;
 use tokio::process::Command;
 use tokio::io::{BufReader, AsyncBufReadExt};
 use regex::Regex;
 use lazy_static::lazy_static;
 use serde_json::Value as JsonValue;
+use reqwest;
+use futures_util::StreamExt;
 
 lazy_static! {
     // Regex to capture download percentage from yt-dlp output
     static ref YTDLP_PROGRESS_REGEX: Regex = Regex::new(r"\[download\]\s+(\d{1,3}(?:\.\d+)?)%").unwrap();
 }
 
-// Helper function to sanitize filenames
-fn sanitize_filename(name: &str) -> String {
-    // More robust sanitization: replace common problematic chars and any non-alphanumeric (excluding ., -, _)
-    name.chars().map(|c| {
-        match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | // Standard problematic chars
-            '？' | '｜' | // Specific chars from the example
-            '#' | '%' | '&' | '{' | '}' | '$' | '!' | '@' | '+' | '`' | '=' // Other potentially problematic chars
-             => '_', 
-            _ if c.is_control() => '_', // Control characters
-            // Allow letters, numbers, period, hyphen, underscore. Replace others.
-            _ if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' => c, 
-            _ => '_' // Replace any other character not explicitly allowed
-        }
-    }).collect::<String>()
-    // Trim leading/trailing whitespace/dots/underscores and limit length
-    .trim_matches(|c: char| c.is_whitespace() || c == '.' || c == '_')
-    .chars().take(200).collect()
+// Utility function to extract a Facebook video ID from a URL
+fn extract_facebook_video_id(url: &str) -> Option<String> {
+    // Extract Facebook video ID using regex
+    lazy_static! {
+        // Pattern for Facebook video IDs in URLs
+        // Matches:
+        // - /videos/123456789/ 
+        // - /v/123456789/
+        // - videos=123456789
+        // - v=123456789
+        static ref FB_VIDEO_ID_REGEX: Regex = Regex::new(r"(?:/videos/|/v/|videos=|v=)(\d+)").unwrap();
+    }
+    
+    FB_VIDEO_ID_REGEX.captures(url)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+// Utility function to sanitize filenames
+fn sanitize_filename(input: &str) -> String {
+    // Replace invalid filename characters with underscores
+    lazy_static! {
+        static ref INVALID_CHARS_REGEX: Regex = Regex::new(r#"[\\/:*?"<>|]"#).unwrap();
+    }
+    
+    // Replace invalid characters with underscores and trim any leading/trailing whitespace
+    let sanitized = INVALID_CHARS_REGEX.replace_all(input, "_").to_string();
+    sanitized.trim().to_string()
 }
 
 // State for holding the database connection
 struct AppState {
-    db: Arc<Mutex<Database>>,
+    db: Arc<Database>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -145,21 +152,6 @@ struct FilemoonFileInfoResult {
 }
 // --- END ADDED ---
 
-// --- ADDED: Helper to extract video ID from common FB URLs ---
-fn extract_facebook_video_id(url_str: &str) -> Option<String> {
-    let reel_regex = Regex::new(r"/reel/(\d+)").unwrap();
-    let watch_regex = Regex::new(r"[?&]v=(\d+)").unwrap();
-
-    if let Some(caps) = reel_regex.captures(url_str) {
-        return caps.get(1).map(|m| m.as_str().to_string());
-    }
-    if let Some(caps) = watch_regex.captures(url_str) {
-        return caps.get(1).map(|m| m.as_str().to_string());
-    }
-    None
-}
-// --- END ADDED ---
-
 #[tauri::command]
 fn open_external_link(window: tauri::Window, url: String) -> Result<(), String> {
     match window.shell_scope().open(&url, None) {
@@ -170,8 +162,7 @@ fn open_external_link(window: tauri::Window, url: String) -> Result<(), String> 
 
 #[tauri::command]
 async fn get_queue_items(app_state: State<'_, AppState>) -> Result<Response<Vec<QueueItem>>, String> {
-    let db = app_state.db.lock().unwrap();
-    match db.get_queue_items() {
+    match app_state.db.get_queue_items().await {
         Ok(items) => Ok(Response {
             success: true,
             message: "Queue items retrieved successfully".to_string(),
@@ -183,8 +174,7 @@ async fn get_queue_items(app_state: State<'_, AppState>) -> Result<Response<Vec<
 
 #[tauri::command]
 async fn add_queue_item(item: QueueItem, app_state: State<'_, AppState>) -> Result<Response<String>, String> {
-    let db = app_state.db.lock().unwrap();
-    match db.add_queue_item(&item) {
+    match app_state.db.add_queue_item(&item).await {
         Ok(id) => {
             // After adding, immediately signal the background task (if possible)
             // Or rely on its periodic check
@@ -200,8 +190,7 @@ async fn add_queue_item(item: QueueItem, app_state: State<'_, AppState>) -> Resu
 
 #[tauri::command]
 async fn update_queue_item(item: QueueItem, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
-    let db = app_state.db.lock().unwrap();
-    match db.update_queue_item(&item) {
+    match app_state.db.update_queue_item(&item).await {
         Ok(_) => Ok(Response {
             success: true,
             message: "Queue item updated successfully".to_string(),
@@ -213,8 +202,7 @@ async fn update_queue_item(item: QueueItem, app_state: State<'_, AppState>) -> R
 
 #[tauri::command]
 async fn update_item_status(id: String, status: String, message: Option<String>, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
-    let db = app_state.db.lock().unwrap();
-    match db.update_item_status(&id, &status, message) {
+    match app_state.db.update_item_status(&id, &status, message).await {
         Ok(_) => Ok(Response {
             success: true,
             message: "Status updated successfully".to_string(),
@@ -226,8 +214,7 @@ async fn update_item_status(id: String, status: String, message: Option<String>,
 
 #[tauri::command]
 async fn clear_completed_items(status_types: Vec<String>, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
-    let db = app_state.db.lock().unwrap();
-    match db.clear_items_by_status(&status_types) {
+    match app_state.db.clear_items_by_status(&status_types).await {
         Ok(_) => Ok(Response {
             success: true,
             message: "Items cleared successfully".to_string(),
@@ -239,8 +226,7 @@ async fn clear_completed_items(status_types: Vec<String>, app_state: State<'_, A
 
 #[tauri::command]
 async fn get_settings(app_state: State<'_, AppState>) -> Result<Response<AppSettings>, String> {
-    let db = app_state.db.lock().unwrap();
-    match db.get_settings() {
+    match app_state.db.get_settings().await {
         Ok(settings) => Ok(Response {
             success: true,
             message: "Settings retrieved successfully".to_string(),
@@ -266,8 +252,7 @@ async fn get_settings(app_state: State<'_, AppState>) -> Result<Response<AppSett
 
 #[tauri::command]
 async fn save_settings(settings: AppSettings, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
-    let db = app_state.db.lock().unwrap();
-    match db.save_settings(&settings) {
+    match app_state.db.save_settings(&settings).await {
         Ok(_) => Ok(Response {
             success: true,
             message: "Settings saved successfully".to_string(),
@@ -302,29 +287,27 @@ async fn create_directory(path: String) -> Result<Response<()>, String> {
 }
 
 #[tauri::command]
-async fn import_from_file(path: String, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
+async fn import_from_file(path: String, _app_state: State<'_, AppState>) -> Result<Response<()>, String> {
     if !Path::new(&path).exists() {
         return Err(format!("File does not exist: {}", path));
     }
-    let db = app_state.db.lock().unwrap();
-    match db.manual_import_from_path(&path) {
-        Ok(_) => Ok(Response {
-            success: true,
-            message: format!("Successfully imported data from {}", path),
-            data: None,
-        }),
-        Err(e) => Err(format!("Failed to import data: {}", e)),
-    }
+    
+    // With the move to PostgreSQL, file import is now a stub that returns a message
+    // Inform the user about the database migration
+    Ok(Response {
+        success: false,
+        message: "Database import from SQLite files is no longer supported as the application now uses Neon PostgreSQL. Use the db:init:neon script to set up your database.".to_string(),
+        data: None,
+    })
 }
 
 #[tauri::command]
 async fn retry_item(id: String, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
-    let db = app_state.db.lock().unwrap();
-    let item_result = db.get_item_by_id(&id);
+    let item_result = app_state.db.get_item_by_id(&id).await;
     match item_result {
         Ok(Some(item)) => {
             if item.status == "failed" && item.filemoon_url.is_none() && item.files_vc_url.is_none() {
-                match db.update_item_status(&id, "queued", Some("Retrying...".to_string())) {
+                match app_state.db.update_item_status(&id, "queued", Some("Retrying...".to_string())).await {
                     Ok(_) => Ok(Response {
                         success: true,
                         message: "Item re-queued for processing.".to_string(),
@@ -343,17 +326,13 @@ async fn retry_item(id: String, app_state: State<'_, AppState>) -> Result<Respon
     }
 }
 
-// --- ADDED: Command to cancel an item ---
 #[tauri::command]
 async fn cancel_item(id: String, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
     // First, get the item to check its status
-    let current_status = {
-        let db = app_state.db.lock().unwrap();
-        match db.get_item_by_id(&id) {
-            Ok(Some(item)) => item.status.clone(),
-            Ok(None) => return Err(format!("Cancel failed: Item {} not found.", id)),
-            Err(e) => return Err(format!("Database error checking item existence: {}", e)),
-        }
+    let current_status = match app_state.db.get_item_by_id(&id).await {
+        Ok(Some(item)) => item.status.clone(),
+        Ok(None) => return Err(format!("Cancel failed: Item {} not found.", id)),
+        Err(e) => return Err(format!("Database error checking item existence: {}", e)),
     };
 
     // If the item is downloading, try to kill the process first
@@ -397,8 +376,7 @@ async fn cancel_item(id: String, app_state: State<'_, AppState>) -> Result<Respo
     }
 
     // Now update the database status
-    let db = app_state.db.lock().unwrap();
-    match db.update_item_status(&id, "cancelled", Some("Cancelled by user".to_string())) {
+    match app_state.db.update_item_status(&id, "cancelled", Some("Cancelled by user".to_string())).await {
         Ok(_) => {
             println!("Item {} marked as cancelled in database", id);
             Ok(Response {
@@ -410,42 +388,36 @@ async fn cancel_item(id: String, app_state: State<'_, AppState>) -> Result<Respo
         Err(e) => Err(format!("Database error updating status to cancelled: {}", e)),
     }
 }
-// --- END ADDED Command ---
 
-// --- ADDED: Command to restart Filemoon encoding ---
 #[tauri::command]
 async fn restart_encoding(id: String, app_state: State<'_, AppState>) -> Result<Response<()>, String> {
     let filecode: String;
     let api_key: String;
     let item_id_clone = id.clone(); // Clone id for potential use after drop
 
-    // Scope to get data from DB and drop lock
-    {
-        let db_lock = app_state.db.lock().unwrap();
-        let item = match db_lock.get_item_by_id(&id) {
-            Ok(Some(i)) => i,
-            Ok(None) => return Err(format!("Restart encoding failed: Item {} not found.", id)),
-            Err(e) => return Err(format!("DB Error getting item for restart: {}", e)),
-        };
+    // Get data from DB
+    let item = match app_state.db.get_item_by_id(&id).await {
+        Ok(Some(i)) => i,
+        Ok(None) => return Err(format!("Restart encoding failed: Item {} not found.", id)),
+        Err(e) => return Err(format!("DB Error getting item for restart: {}", e)),
+    };
 
-        filecode = match item.filemoon_url {
-            Some(fc) if !fc.is_empty() => fc,
-            _ => return Err(format!("Restart encoding failed: Filemoon filecode not found for item.")),
-        };
+    filecode = match item.filemoon_url {
+        Some(fc) if !fc.is_empty() => fc,
+        _ => return Err(format!("Restart encoding failed: Filemoon filecode not found for item.")),
+    };
 
-        let settings = match db_lock.get_settings() {
-            Ok(s) => s,
-            Err(e) => return Err(format!("Failed to get settings for restart: {}", e)),
-        };
+    let settings = match app_state.db.get_settings().await {
+        Ok(s) => s,
+        Err(e) => return Err(format!("Failed to get settings for restart: {}", e)),
+    };
 
-        api_key = match settings.filemoon_api_key {
-            Some(key) if !key.is_empty() => key,
-            _ => return Err("Restart encoding failed: Filemoon API key not configured".to_string()),
-        };
-        // db_lock is dropped here
-    }
+    api_key = match settings.filemoon_api_key {
+        Some(key) if !key.is_empty() => key,
+        _ => return Err("Restart encoding failed: Filemoon API key not configured".to_string()),
+    };
 
-    // Perform HTTP request outside of DB lock scope
+    // Perform HTTP request
     println!("Attempting to restart encoding for filecode: {}", filecode);
     let client = reqwest::Client::new();
     let params = [("key", &api_key), ("file_code", &filecode)];
@@ -460,12 +432,11 @@ async fn restart_encoding(id: String, app_state: State<'_, AppState>) -> Result<
                 Ok(resp_body) => {
                     if status.is_success() && resp_body.status == 200 {
                         println!("Filemoon restart encoding request successful for {}", filecode);
-                        // Re-acquire lock to update status
-                        {
-                            let db_lock_after = app_state.db.lock().unwrap();
-                            let _ = db_lock_after.update_item_status(&item_id_clone, "encoding", Some("Restarted encoding".to_string()));
-                            // db_lock_after dropped here
+                        // Update status
+                        if let Err(e) = app_state.db.update_item_status(&item_id_clone, "encoding", Some("Restarted encoding".to_string())).await {
+                            eprintln!("Error updating status after restart: {}", e);
                         }
+                        
                         Ok(Response {
                             success: true,
                             message: format!("Successfully requested encoding restart for filecode {}", filecode),
@@ -474,24 +445,22 @@ async fn restart_encoding(id: String, app_state: State<'_, AppState>) -> Result<
                     } else {
                         let err_msg = format!("Filemoon restart API Error (Status {}): {}", resp_body.status, resp_body.msg);
                         println!("{}", err_msg);
-                        // Re-acquire lock to update status to failed
-                        {
-                            let db_lock_after = app_state.db.lock().unwrap();
-                            let _ = db_lock_after.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
-                             // db_lock_after dropped here
+                        // Update status to failed
+                        if let Err(e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(err_msg.clone())).await {
+                            eprintln!("Error updating status to failed: {}", e);
                         }
+                        
                         Err(err_msg)
                     }
                 }
                 Err(e) => {
                     let err_msg = format!("Failed to parse Filemoon restart response: {}", e);
                     println!("{}", err_msg);
-                     // Attempt to update status to failed even on parse error
-                     {
-                        let db_lock_after = app_state.db.lock().unwrap();
-                        let _ = db_lock_after.update_item_status(&item_id_clone, "failed", Some(format!("Parse Error: {}", e)));
-                        // db_lock_after dropped here
+                    // Update status to failed on parse error
+                    if let Err(db_e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(format!("Parse Error: {}", e))).await {
+                        eprintln!("Error updating status on parse error: {}", db_e);
                     }
+                    
                     Err(err_msg)
                 }
             }
@@ -499,23 +468,19 @@ async fn restart_encoding(id: String, app_state: State<'_, AppState>) -> Result<
         Err(e) => {
             let err_msg = format!("Filemoon restart request failed: {}", e);
             println!("{}", err_msg);
-            // Attempt to update status to failed on request error
-            {
-                let db_lock_after = app_state.db.lock().unwrap();
-                let _ = db_lock_after.update_item_status(&item_id_clone, "failed", Some(format!("Request Error: {}", e)));
-                // db_lock_after dropped here
+            // Update status to failed on request error
+            if let Err(db_e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(format!("Request Error: {}", e))).await {
+                eprintln!("Error updating status on request error: {}", db_e);
             }
+            
             Err(err_msg)
         }
     }
 }
-// --- END ADDED Command ---
 
-// --- ADDED: Command to get gallery items ---
 #[tauri::command]
 async fn get_gallery_items(app_state: State<'_, AppState>) -> Result<Response<Vec<QueueItem>>, String> {
-    let db = app_state.db.lock().unwrap();
-    match (*db).get_gallery_items() {
+    match app_state.db.get_gallery_items().await {
         Ok(items) => Ok(Response {
             success: true,
             message: "Gallery items retrieved successfully".to_string(),
@@ -524,7 +489,6 @@ async fn get_gallery_items(app_state: State<'_, AppState>) -> Result<Response<Ve
         Err(e) => Err(format!("Database error getting gallery items: {}", e)),
     }
 }
-// --- END ADDED Command ---
 
 #[tauri::command]
 async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Response<String>, String> {
@@ -533,43 +497,38 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
     let settings_clone: AppSettings; // Clone settings to use outside lock
     let item_id_clone = id.clone(); // Clone id
 
-    // Scope 1: Get initial data and mark as uploading
-    {
-        let db = app_state.db.lock().unwrap();
-        let item = match db.get_item_by_id(&id) {
-            Ok(Some(item)) => item,
-            Ok(None) => return Err(format!("Upload failed: Item {} not found.", id)),
-            Err(e) => return Err(format!("Database error retrieving item: {}", e)),
-        };
+    // Get initial data and mark as uploading
+    let item = match app_state.db.get_item_by_id(&id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => return Err(format!("Upload failed: Item {} not found.", id)),
+        Err(e) => return Err(format!("Database error retrieving item: {}", e)),
+    };
 
-        settings_clone = match db.get_settings() {
-            Ok(settings) => settings,
-            Err(e) => return Err(format!("Failed to retrieve settings: {}", e)),
-        };
+    settings_clone = match app_state.db.get_settings().await {
+        Ok(settings) => settings,
+        Err(e) => return Err(format!("Failed to retrieve settings: {}", e)),
+    };
 
-        // Updated to allow both 'completed' and 'encoded' status for upload
-        if item.status != "completed" && item.status != "encoded" {
-            return Err(format!("Item {} is not in a completed or encoded state (status: {}). Cannot upload.", id, item.status));
-        }
-
-        // Check if local_path exists
-        local_path_str = match &item.local_path {
-            Some(p) if !p.is_empty() => p.clone(),
-            Some(_) => return Err(format!("Upload failed: Local file path is empty for item.")),
-            None => return Err(format!("Upload failed: Local file path not found for item.")),
-        };
-
-        let local_path_check = Path::new(&local_path_str); // Need Path for filename
-        filename = local_path_check.file_name().and_then(|n| n.to_str()).unwrap_or("unknown_file").to_string();
-
-        if let Err(e) = db.update_item_status(&id, "uploading", Some("Starting upload...".to_string())) {
-            return Err(format!("Failed to update item status to uploading: {}", e));
-        }
-        
-        // db lock dropped here
+    // Updated to allow both 'completed' and 'encoded' status for upload
+    if item.status != "completed" && item.status != "encoded" {
+        return Err(format!("Item {} is not in a completed or encoded state (status: {}). Cannot upload.", id, item.status));
     }
 
-    // Check file existence outside lock with improved diagnostics
+    // Check if local_path exists
+    local_path_str = match &item.local_path {
+        Some(p) if !p.is_empty() => p.clone(),
+        Some(_) => return Err(format!("Upload failed: Local file path is empty for item.")),
+        None => return Err(format!("Upload failed: Local file path not found for item.")),
+    };
+
+    let local_path_check = Path::new(&local_path_str); // Need Path for filename
+    filename = local_path_check.file_name().and_then(|n| n.to_str()).unwrap_or("unknown_file").to_string();
+
+    if let Err(e) = app_state.db.update_item_status(&id, "uploading", Some("Starting upload...".to_string())).await {
+        return Err(format!("Failed to update item status to uploading: {}", e));
+    }
+
+    // Check file existence
     let local_path = Path::new(&local_path_str);
     if !local_path.exists() {
         // Print more diagnostics
@@ -584,29 +543,29 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
             }
         }
         
-        // Re-acquire lock to update status
-        {
-            let db_err = app_state.db.lock().unwrap();
-            let _ = db_err.update_item_status(&item_id_clone, "failed", Some(format!("Local file not found at: {}", local_path_str)));
+        // Update status
+        if let Err(e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(format!("Local file not found at: {}", local_path_str))).await {
+            eprintln!("Error updating status after file not found: {}", e);
         }
+        
         return Err(format!("Upload failed: Local file does not exist at {}", local_path_str));
     } else {
         println!("File path check passed: {} exists", local_path_str);
     }
 
     // Perform uploads outside lock
-    let mut final_message = "Upload status unknown".to_string();
-    let mut success = false;
+    let mut success = false; // Track success status
+    let mut filecode = String::new(); // Initialize filecode for later use
     let client = reqwest::Client::new();
 
     // --- Filemoon Upload Logic --- 
     let api_key = match settings_clone.filemoon_api_key.clone() {
         Some(key) if !key.is_empty() => key,
         _ => {
-            {
-                let db_err = app_state.db.lock().unwrap();
-                let _ = db_err.update_item_status(&item_id_clone, "failed", Some("Filemoon API key not configured".to_string()));
+            if let Err(e) = app_state.db.update_item_status(&item_id_clone, "failed", Some("Filemoon API key not configured".to_string())).await {
+                eprintln!("Error updating status after API key missing: {}", e);
             }
+            
             return Err("Filemoon API key not configured".to_string());
         }
     };
@@ -628,20 +587,22 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                     } else {
                         let err_msg = format!("Filemoon GetServer API Error (Status {}): {}", resp_body.status, resp_body.msg);
                         println!("{}", err_msg);
-                            {
-                                let db_lock = app_state.db.lock().unwrap();
-                                let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                        
+                        if let Err(e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(err_msg.clone())).await {
+                            eprintln!("Error updating status after API error: {}", e);
                         }
+                        
                         return Err(err_msg); // Stop here if we can't get upload server
                     }
                 }
                 Err(e) => {
                     let err_msg = format!("Failed to parse Filemoon GetServer response: {}", e);
                     println!("{}", err_msg);
-                        {
-                        let db_lock = app_state.db.lock().unwrap();
-                        let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
-                        }
+                    
+                    if let Err(db_e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(err_msg.clone())).await {
+                        eprintln!("Error updating status after parse error: {}", db_e);
+                    }
+                    
                     return Err(err_msg);
                 }
             }
@@ -649,10 +610,11 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
         Err(e) => {
             let err_msg = format!("Filemoon GetServer request failed: {}", e);
             println!("{}", err_msg);
-            {
-                let db_lock = app_state.db.lock().unwrap();
-                let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+            
+            if let Err(db_e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(err_msg.clone())).await {
+                eprintln!("Error updating status after request error: {}", db_e);
             }
+            
             return Err(err_msg);
         }
     }
@@ -685,34 +647,35 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
             // Read the response body as text first for debugging
             match response.text().await {
                 Ok(raw_text) => {
-                    // println!("Filemoon Upload Raw Response Status: {}", upload_status); // Debug
-                    // println!("Filemoon Upload Raw Response Body: {}", raw_text); // Debug
-
                     // Now attempt to parse the raw text as JSON
                     match serde_json::from_str::<FilemoonUploadResponse>(&raw_text) {
                         Ok(resp_body) => {
                             // Check using the parsed JSON
                             if upload_status.is_success() && resp_body.status == 200 && resp_body.files.as_ref().map_or(false, |f| !f.is_empty()) {
-                                let filecode = resp_body.files.unwrap().remove(0).filecode;
+                                filecode = resp_body.files.unwrap().remove(0).filecode;
                                 println!("Filemoon upload successful! Filecode: {}", filecode);
-                                {
-                                    let db_lock = app_state.db.lock().unwrap();
-                                    let _ = db_lock.update_item_status(&item_id_clone, "transferring", Some(format!("Filemoon: {}. Awaiting encoding...", filecode)));
-                                    let mut updated_item = db_lock.get_item_by_id(&item_id_clone).map_err(|e| format!("DB Error: {}", e))?.unwrap();
-                                    updated_item.filemoon_url = Some(filecode.clone());
-                                    if let Err(e) = db_lock.update_queue_item(&updated_item) { eprintln!("Failed to update Filemoon URL in DB: {}", e); }
+                                
+                                if let Err(e) = app_state.db.update_item_status(&item_id_clone, "transferring", Some(format!("Filemoon: {}. Awaiting encoding...", filecode))).await {
+                                    eprintln!("Error updating status after successful upload: {}", e);
                                 }
-                                final_message = format!("Upload to Filemoon successful (Filecode: {}). Awaiting encoding.", filecode);
+                                
+                                // Update the item with the filecode
+                                let mut updated_item = app_state.db.get_item_by_id(&item_id_clone).await.map_err(|e| format!("DB Error: {}", e))?.unwrap();
+                                updated_item.filemoon_url = Some(filecode.clone());
+                                
+                                if let Err(e) = app_state.db.update_queue_item(&updated_item).await {
+                                    eprintln!("Failed to update Filemoon URL in DB: {}", e);
+                                }
+                                
                                 success = true;
                             } else {
                                 let err_msg = format!("Filemoon Upload API Error (Status {}): {} - Parsed from JSON: {:?}", 
                                                     resp_body.status, resp_body.msg, resp_body);
                                 println!("{}", err_msg);
-                                {
-                                    let db_lock = app_state.db.lock().unwrap();
-                                    let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                                
+                                if let Err(e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(err_msg.clone())).await {
+                                    eprintln!("Error updating status after API error: {}", e);
                                 }
-                                final_message = err_msg;
                             }
                         }
                         Err(e) => {
@@ -720,11 +683,10 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                             let err_msg = format!("Failed to parse Filemoon Upload JSON response (Status {}): {}. Raw Body: {}", 
                                                 upload_status, e, raw_text);
                             println!("{}", err_msg);
-                            {
-                                let db_lock = app_state.db.lock().unwrap();
-                                let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                            
+                            if let Err(db_e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(err_msg.clone())).await {
+                                eprintln!("Error updating status after parse error: {}", db_e);
                             }
-                            final_message = err_msg;
                         }
                     }
                 }
@@ -732,22 +694,20 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                     // Failed to even read the response body as text
                     let err_msg = format!("Failed to read Filemoon Upload response body (Status {}): {}", upload_status, e);
                     println!("{}", err_msg);
-                    {
-                        let db_lock = app_state.db.lock().unwrap();
-                        let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+                    
+                    if let Err(db_e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(err_msg.clone())).await {
+                        eprintln!("Error updating status after response error: {}", db_e);
                     }
-                    final_message = err_msg;
                 }
             }
         }
         Err(e) => {
             let err_msg = format!("Filemoon Upload request failed: {}", e);
             println!("{}", err_msg);
-            {
-                let db_lock = app_state.db.lock().unwrap();
-                let _ = db_lock.update_item_status(&item_id_clone, "failed", Some(err_msg.clone()));
+            
+            if let Err(db_e) = app_state.db.update_item_status(&item_id_clone, "failed", Some(err_msg.clone())).await {
+                eprintln!("Error updating status after request error: {}", db_e);
             }
-            final_message = err_msg;
         }
     }
 
@@ -759,11 +719,10 @@ async fn trigger_upload(id: String, app_state: State<'_, AppState>) -> Result<Re
                  Err(e) => eprintln!("Failed to delete local file {}: {}", local_path_str, e),
              }
         }
-        Ok(Response { success: true, message: final_message, data: Some(item_id_clone) })
+        Ok(Response { success: true, message: format!("Upload to Filemoon successful (Filecode: {}). Awaiting encoding.", filecode), data: Some(item_id_clone) })
     } else {
-        // If upload failed, the error message is in final_message
-        // The status would have been set to failed within the upload block
-        Err(final_message)
+        // If upload failed, return a generic error message since err_msg variable is used in multiple places
+        Err(format!("Upload failed. See the application logs for details."))
     }
 }
 
@@ -781,9 +740,6 @@ async fn check_filemoon_status(item_id: &str, filecode: &str, api_key: &str, app
             let status = response.status();
             match response.text().await { // Read as text first
                 Ok(raw_text) => {
-                    // println!("Item {} Filemoon Status Raw Response Status: {}", item_id, status); // Debug
-                    // println!("Item {} Filemoon Status Raw Response Body: {}", item_id, raw_text); // Debug
-
                     // Now attempt to parse the raw text as JSON
                     match serde_json::from_str::<FilemoonEncodingStatusResponse>(&raw_text) {
                         Ok(resp_body) => {
@@ -805,9 +761,10 @@ async fn check_filemoon_status(item_id: &str, filecode: &str, api_key: &str, app
                                     println!("Item {} Filemoon Status Update: DB={}, API={}, Progress={:?}", item_id, new_db_status, api_status, progress);
 
                                     // Always update DB with the status from encoding/status endpoint
-                                    let state: State<'_, AppState> = app_handle.state();
-                                    let db_lock = state.db.lock().unwrap();
-                                    let _ = (*db_lock).update_item_encoding_details(item_id, new_db_status, progress, Some(message));
+                                    let state = app_handle.state::<AppState>();
+                                    if let Err(e) = state.db.update_item_encoding_details(item_id, new_db_status, progress, Some(message)).await {
+                                        eprintln!("Error updating encoding details: {}", e);
+                                    }
 
                                 } else {
                                     eprintln!("Item {} Filemoon status check successful but no result data (parsed from JSON)", item_id);
@@ -818,31 +775,27 @@ async fn check_filemoon_status(item_id: &str, filecode: &str, api_key: &str, app
                                     let api_key_clone = api_key.to_string();
                                     let handle_clone = app_handle.clone();
                                     tokio::spawn(async move {
-                                        check_filemoon_file_info(&item_id_clone, &filecode_clone, &api_key_clone, &handle_clone).await;
+                                        let _ = check_filemoon_file_info(&item_id_clone, &filecode_clone, &api_key_clone, &handle_clone).await;
                                     });
                                 }
                             } else {
                                 eprintln!("Item {} Filemoon Status API Error (HTTP {}, API Status {}): {} (parsed from JSON)", item_id, status, resp_body.status, resp_body.msg);
-                                // Maybe update DB status to failed?
                             }
                         }
                         Err(e) => {
                             // JSON parsing failed
                             eprintln!("Item {} Failed to parse Filemoon Status JSON response: {}. Raw Body: {}", item_id, e, raw_text);
-                            // Maybe update DB status to failed?
                         }
                     }
                 }
                 Err(e) => {
                     // Failed to even read the response body as text
                     eprintln!("Item {} Failed to read Filemoon Status response body (HTTP {}): {}", item_id, status, e);
-                    // Maybe update DB status to failed?
                 }
             }
         }
         Err(e) => {
             eprintln!("Item {} Filemoon Status request failed: {}", item_id, e);
-             // Maybe update DB status to failed?
         }
     }
 }
@@ -864,9 +817,6 @@ async fn check_filemoon_file_info(item_id: &str, filecode: &str, api_key: &str, 
             // Read body text first for better error reporting
             match response.text().await {
                 Ok(raw_text) => {
-                    // println!("Item {} Filemoon Status Raw Response Status: {}", item_id, status); // Debug
-                    // println!("Item {} Filemoon Status Raw Response Body: {}", item_id, raw_text); // Debug
-
                     match serde_json::from_str::<FilemoonFileInfoResponse>(&raw_text) {
                         Ok(resp_body) => {
                             if status.is_success() && resp_body.status == 200 {
@@ -874,26 +824,28 @@ async fn check_filemoon_file_info(item_id: &str, filecode: &str, api_key: &str, 
                                     if let Some(file_info) = results.iter().find(|r| r.file_code == filecode) {
                                         if file_info.status == 200 && file_info.canplay == Some(1) {
                                             println!("Item {} Filemoon file/info shows canplay=1. Marking as encoded.", item_id);
-                                            let state: State<'_, AppState> = app_handle.state();
-                                            let db_lock = state.db.lock().unwrap();
-                                            let _ = (*db_lock).update_item_encoding_details(
+                                            let state = app_handle.state::<AppState>();
+                                            if let Err(e) = state.db.update_item_encoding_details(
                                                 item_id, 
                                                 "encoded", 
                                                 Some(100), 
                                                 Some("Filemoon status: Ready (canplay=1)".to_string())
-                                            );
+                                            ).await {
+                                                eprintln!("Error updating status to encoded: {}", e);
+                                            }
                                             Ok(true) // File is ready
                                         } else if file_info.status == 200 { // File exists but not playable yet
                                             println!("Item {} Filemoon file/info shows canplay!=1. Marking as encoding.", item_id);
                                             // Update DB to encoding
-                                            let state: State<'_, AppState> = app_handle.state();
-                                            let db_lock = state.db.lock().unwrap();
-                                            let _ = (*db_lock).update_item_encoding_details(
+                                            let state = app_handle.state::<AppState>();
+                                            if let Err(e) = state.db.update_item_encoding_details(
                                                 item_id,
                                                 "encoding",
                                                 None, // Progress unknown from file/info
                                                 Some(format!("Filemoon status: Exists (canplay={:?})", file_info.canplay))
-                                            );
+                                            ).await {
+                                                eprintln!("Error updating status to encoding: {}", e);
+                                            }
                                             Ok(false) // Checked, but not ready (status is now encoding)
                                         } else { // File status is not 200 (e.g., error, deleted?)
                                             println!("Item {} Filemoon file/info status ({}): canplay={:?}. Not ready yet.", item_id, file_info.status, file_info.canplay);
@@ -941,6 +893,8 @@ async fn check_filemoon_file_info(item_id: &str, filecode: &str, api_key: &str, 
 
 // --- ADDED: Orchestrator function for checking Filemoon readiness ---
 async fn check_filemoon_readiness(item_id: &str, filecode: &str, api_key: &str, app_handle: &tauri::AppHandle) {
+    println!("Checking Filemoon readiness for item {}, filecode: {}", item_id, filecode);
+    
     // 1. Check file/info first
     match check_filemoon_file_info(item_id, filecode, api_key, app_handle).await {
         Ok(true) => {
@@ -969,36 +923,31 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
         let mut item_to_process: Option<QueueItem> = None;
         let mut should_sleep_long = true; // Sleep longer if no item found or error
 
-        {
-            // --- Start of DB Lock Scope 1 --- 
-            let app_state: State<'_, AppState> = app_handle.state();
-            let db_lock = app_state.db.lock().unwrap();
+        // Check if any active processing is happening
+        let app_state: State<'_, AppState> = app_handle.state();
+        let is_already_processing = match app_state.db.is_item_in_status(&["downloading", "uploading"]).await {
+            Ok(processing) => processing,
+            Err(e) => {
+                eprintln!("DB Error checking for active processing: {}", e);
+                false 
+            }
+        };
 
-            let is_already_processing = match (*db_lock).is_item_in_status(&["downloading", "uploading"]) {
-                Ok(processing) => processing,
+        if !is_already_processing {
+            match app_state.db.get_next_queued_item().await {
+                Ok(Some(item)) => {
+                    item_to_process = Some(item);
+                    should_sleep_long = false; // Found item, process immediately
+                },
+                Ok(None) => { /* No items, sleep long */ },
                 Err(e) => {
-                    eprintln!("DB Error checking for active processing: {}", e);
-                    false 
-                }
-            };
-
-            if !is_already_processing {
-                match (*db_lock).get_next_queued_item() {
-                    Ok(Some(item)) => {
-                        item_to_process = Some(item);
-                        should_sleep_long = false; // Found item, process immediately
-                    },
-                    Ok(None) => { /* No items, sleep long */ },
-                    Err(e) => {
-                        eprintln!("DB Error fetching next queued item: {}", e);
-                         /* Error, sleep long */ 
-                    }
+                    eprintln!("DB Error fetching next queued item: {}", e);
+                     /* Error, sleep long */ 
                 }
             }
-            // --- db_lock is dropped here at the end of the scope ---
         }
 
-        // --- Process Item (if found) outside the main DB lock scope ---
+        // Process Item (if found) outside the main DB lock scope
         if let Some(next_item) = item_to_process {
             let item_id = next_item.id.clone().unwrap_or_default();
             let item_url = next_item.url.clone();
@@ -1007,55 +956,56 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
             let download_dir: String;
             let mut proceed_with_download = true; // Assume true initially
 
-            {
-                 // --- Start of DB Lock Scope 2 (Settings & Mark Downloading) ---
-                let app_state: State<'_, AppState> = app_handle.state();
-                let db_lock = app_state.db.lock().unwrap();
-
-                let settings = match (*db_lock).get_settings() {
-                    Ok(s) => s,
-        Err(e) => {
-                        eprintln!("Error getting settings for item {}: {}", item_id, e);
-                        let _ = (*db_lock).update_item_status(&item_id, "failed", Some(format!("Failed to get settings: {}", e)));
-                        AppSettings::default() // Return default to avoid breaking flow, but log error
+            // Get settings and mark as downloading
+            let app_state: State<'_, AppState> = app_handle.state();
+            let settings = match app_state.db.get_settings().await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error getting settings for item {}: {}", item_id, e);
+                    if let Err(update_err) = app_state.db.update_item_status(&item_id, "failed", Some(format!("Failed to get settings: {}", e))).await {
+                        eprintln!("Error updating status after settings error: {}", update_err);
                     }
-                };
+                    AppSettings::default() // Return default to avoid breaking flow, but log error
+                }
+            };
 
-                let download_dir_setting = settings.download_directory;
-                download_dir = match download_dir_setting {
-                    Some(dir) if !dir.is_empty() => dir,
-                    _ => {
-                         match dirs::download_dir() {
-                             Some(dir) => dir.to_string_lossy().to_string(),
-                             None => {
-                                 let err_msg = "Download directory not set and default couldn't be determined.".to_string();
-                                 eprintln!("Error for item {}: {}", item_id, err_msg);
-                                 let _ = (*db_lock).update_item_status(&item_id, "failed", Some(err_msg));
-                                 String::new() // Return empty string, check later
+            let download_dir_setting = settings.download_directory;
+            download_dir = match download_dir_setting {
+                Some(dir) if !dir.is_empty() => dir,
+                _ => {
+                     match dirs::download_dir() {
+                         Some(dir) => dir.to_string_lossy().to_string(),
+                         None => {
+                             let err_msg = "Download directory not set and default couldn't be determined.".to_string();
+                             eprintln!("Error for item {}: {}", item_id, err_msg);
+                             if let Err(update_err) = app_state.db.update_item_status(&item_id, "failed", Some(err_msg)).await {
+                                 eprintln!("Error updating status after directory error: {}", update_err);
                              }
+                             String::new() // Return empty string, check later
                          }
-                    }
-                };
+                     }
+                }
+            };
 
-                if download_dir.is_empty() {
-                     proceed_with_download = false;
-                } else if let Err(e) = fs::create_dir_all(&download_dir) {
-                     let err_msg = format!("Failed to create download directory '{}': {}", download_dir, e);
-                     eprintln!("Error for item {}: {}", item_id, err_msg);
-                     let _ = (*db_lock).update_item_status(&item_id, "failed", Some(err_msg));
-                     proceed_with_download = false;
-                } else if let Err(e) = (*db_lock).update_item_status(&item_id, "downloading", Some("Download starting...".to_string())) {
-                     eprintln!("Error marking item {} as downloading: {}", item_id, e);
-                     proceed_with_download = false; // Failed to update status, don't proceed
-                } 
-                // --- db_lock is dropped here ---
-            }
+            if download_dir.is_empty() {
+                 proceed_with_download = false;
+            } else if let Err(e) = fs::create_dir_all(&download_dir) {
+                 let err_msg = format!("Failed to create download directory '{}': {}", download_dir, e);
+                 eprintln!("Error for item {}: {}", item_id, err_msg);
+                 if let Err(update_err) = app_state.db.update_item_status(&item_id, "failed", Some(err_msg)).await {
+                     eprintln!("Error updating status after directory creation error: {}", update_err);
+                 }
+                 proceed_with_download = false;
+            } else if let Err(e) = app_state.db.update_item_status(&item_id, "downloading", Some("Download starting...".to_string())).await {
+                 eprintln!("Error marking item {} as downloading: {}", item_id, e);
+                 proceed_with_download = false; // Failed to update status, don't proceed
+            } 
 
-            // --- Execute Download (if safe to proceed) --- 
+            // Execute Download (if safe to proceed)
             if proceed_with_download { // Check the flag
                 println!("Starting yt-dlp download for item: {}...", item_id);
                 
-                // --- yt-dlp Command Construction ---
+                // yt-dlp Command Construction
                 // Use a simple, safe output template using the video ID
                 let output_template = format!("%(id)s.%(ext)s"); 
                 let output_path_base = Path::new(&download_dir); // Just the directory
@@ -1079,7 +1029,7 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                 cmd.stdout(Stdio::piped()); // Capture standard output
                 cmd.stderr(Stdio::piped()); // Capture standard error
                 
-                // --- Run yt-dlp Process ---
+                // Run yt-dlp Process
                 let mut download_success = false;
 
                 match cmd.spawn() {
@@ -1097,23 +1047,19 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         // Spawn task to read stdout and parse progress
                         tokio::spawn(async move {
                             while let Ok(Some(line)) = stdout_reader.next_line().await {
-                                // println!("[yt-dlp stdout] {}", line); // Optional: keep for debugging
-
                                 // Check for progress
                                 if let Some(caps) = YTDLP_PROGRESS_REGEX.captures(&line) {
                                     if let Some(percent_match) = caps.get(1) {
                                         if let Ok(percent) = percent_match.as_str().parse::<f32>() {
                                             let progress_message = format!("Downloading: {:.1}%", percent);
-                                            // Update DB status (briefly lock)
-                                            {
-                                                let state: State<'_, AppState> = app_handle_clone_stdout.state();
-                                                let db_lock = state.db.lock().unwrap();
-                                                let _ = db_lock.update_item_status(&item_id_clone_stdout, "downloading", Some(progress_message));
+                                            // Update DB status
+                                            let state: State<'_, AppState> = app_handle_clone_stdout.state();
+                                            if let Err(e) = state.db.update_item_status(&item_id_clone_stdout, "downloading", Some(progress_message)).await {
+                                                eprintln!("Error updating download progress: {}", e);
                                             }
                                         }
                                     }
                                 }
-                                // REMOVE: Logic to check for destination filename
                             }
                         });
 
@@ -1142,22 +1088,20 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                         if stderr_output.is_empty() { "None" } else { &stderr_output }
                                     );
                                     eprintln!("Error for item {}: {}", item_id, err_msg);
-                                    // Update DB status directly
-                                    {
-                                        let state_err: State<'_, AppState> = app_handle.state();
-                                        let db_lock_err = state_err.db.lock().unwrap();
-                                        let _ = db_lock_err.update_item_status(&item_id, "failed", Some(err_msg));
+                                    // Update DB status
+                                    let state_err: State<'_, AppState> = app_handle.state();
+                                    if let Err(e) = state_err.db.update_item_status(&item_id, "failed", Some(err_msg)).await {
+                                        eprintln!("Error updating status after download failure: {}", e);
                                     }
                                 }
                             }
                             Err(e) => {
                                 let err_msg = format!("Failed to wait for yt-dlp process: {}", e);
                                 eprintln!("Error for item {}: {}", item_id, err_msg);
-                                // Update DB status directly
-                                {
-                                    let state_err: State<'_, AppState> = app_handle.state();
-                                    let db_lock_err = state_err.db.lock().unwrap();
-                                    let _ = db_lock_err.update_item_status(&item_id, "failed", Some(err_msg));
+                                // Update DB status
+                                let state_err: State<'_, AppState> = app_handle.state();
+                                if let Err(update_e) = state_err.db.update_item_status(&item_id, "failed", Some(err_msg)).await {
+                                    eprintln!("Error updating status after process error: {}", update_e);
                                 }
                             }
                         }
@@ -1165,200 +1109,190 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                     Err(e) => {
                          let err_msg = format!("Failed to spawn yt-dlp command: {}. Is yt-dlp installed and in PATH?", e);
                          eprintln!("Error for item {}: {}", item_id, err_msg);
-                         // Update DB status directly
-                         {
-                             let state_err: State<'_, AppState> = app_handle.state();
-                             let db_lock_err = state_err.db.lock().unwrap();
-                             let _ = db_lock_err.update_item_status(&item_id, "failed", Some(err_msg));
+                         // Update DB status
+                         let state_err: State<'_, AppState> = app_handle.state();
+                         if let Err(update_e) = state_err.db.update_item_status(&item_id, "failed", Some(err_msg)).await {
+                             eprintln!("Error updating status after spawn error: {}", update_e);
                          }
                     }
                 }
-                // --- END yt-dlp Process ---
+                // END yt-dlp Process
 
-                // --- After download attempt ---
-                {
-                     let app_state: State<'_, AppState> = app_handle.state();
-                     let db_lock_after = app_state.db.lock().unwrap();
+                // After download attempt
+                if download_success {
+                    // Read info.json to get actual file details
+                    let mut actual_video_path: Option<String> = None;
+                    let mut video_title: Option<String> = None;
+                    let mut thumbnail_url: Option<String> = None;
+                    let mut processed_json = false; // Flag to indicate if we successfully processed a JSON
+                    
+                    let item_original_url = next_item.url.clone(); // Clone the URL for comparison
 
-                     if download_success {
-                        // --- Read info.json to get actual file details --- 
-                        let mut actual_video_path: Option<String> = None;
-                        let mut video_title: Option<String> = None;
-                        let mut thumbnail_url: Option<String> = None;
-                        let mut processed_json = false; // Flag to indicate if we successfully processed a JSON
-                        
-                        let item_original_url = next_item.url.clone(); // Clone the URL for comparison
+                    println!("Download successful for item {}. Searching for matching .info.json in dir: {}", item_id, download_dir);
 
-                        println!("Download successful for item {}. Searching for matching .info.json in dir: {}", item_id, download_dir);
+                    // Search for the *correct* .info.json file by matching the URL inside
+                    if let Ok(entries) = fs::read_dir(&download_dir) {
+                        for entry in entries.filter_map(Result::ok) {
+                            let path = entry.path();
+                            // Check if it's a .info.json file
+                            if path.is_file() && 
+                               path.extension().map_or(false, |ext| ext == "json") && 
+                               path.file_stem().map_or(false, |stem| stem.to_string_lossy().ends_with(".info")) {
+                                
+                                let json_path_str = path.to_string_lossy().to_string();
+                                println!("Item {}: Found potential info.json: {}", item_id, json_path_str);
+                                
+                                // Read and parse the JSON
+                                if let Ok(json_content) = fs::read_to_string(&path) {
+                                    if let Ok(info) = serde_json::from_str::<JsonValue>(&json_content) {
+                                        // *** Match URL from JSON with item URL ***
+                                        println!("Item {}: Parsing info.json: {}", item_id, json_path_str);
+                                        let json_url = info.get("webpage_url")
+                                                      .or_else(|| info.get("original_url")) // Fallback to original_url
+                                                      .and_then(|v| v.as_str());
 
-                        // Search for the *correct* .info.json file by matching the URL inside
-                        if let Ok(entries) = fs::read_dir(&download_dir) {
-                            for entry in entries.filter_map(Result::ok) {
-                                let path = entry.path();
-                                // Check if it's a .info.json file
-                                if path.is_file() && 
-                                   path.extension().map_or(false, |ext| ext == "json") && 
-                                   path.file_stem().map_or(false, |stem| stem.to_string_lossy().ends_with(".info")) {
-                                    
-                                    let json_path_str = path.to_string_lossy().to_string();
-                                    println!("Item {}: Found potential info.json: {}", item_id, json_path_str);
-                                    
-                                    // Read and parse the JSON
-                                    if let Ok(json_content) = fs::read_to_string(&path) {
-                                        if let Ok(info) = serde_json::from_str::<JsonValue>(&json_content) {
-                                            // *** Match URL from JSON with item URL ***
-                                            println!("Item {}: Parsing info.json: {}", item_id, json_path_str);
-                                            let json_url = info.get("webpage_url")
-                                                          .or_else(|| info.get("original_url")) // Fallback to original_url
-                                                          .and_then(|v| v.as_str());
-
-                                            let urls_match = match json_url {
-                                                Some(j_url) => {
-                                                    // Try matching by extracted ID first
-                                                    let original_id = extract_facebook_video_id(&item_original_url);
-                                                    let json_id = extract_facebook_video_id(j_url);
-                                                    println!("Item {}: Comparing Original URL '{}' (ID: {:?}) with JSON URL '{}' (ID: {:?})", 
-                                                             item_id, item_original_url, original_id, j_url, json_id);
-                                                    
-                                                    if original_id.is_some() && json_id.is_some() && original_id == json_id {
-                                                        println!("Item {}: URLs match based on extracted video ID.", item_id);
-                                                        true // IDs match
-                                                    } else {
-                                                        // Fallback to direct string comparison if IDs don't match or couldn't be extracted
-                                                         println!("Item {}: Video IDs don't match or couldn't be extracted. Comparing full URLs.", item_id);
-                                                        j_url == item_original_url
-                                                    }
-                                                },
-                                                None => {
-                                                     println!("Item {}: No URL found in JSON. Cannot compare.", item_id);
-                                                     false // No URL in JSON to compare
-                                                }
-                                            };
-
-                                            if urls_match {
-                                                println!("Item {}: Successfully parsed MATCHING info.json: {}", item_id, json_path_str);
-                                                processed_json = true; // Mark that we parsed the correct JSON
-
-                                                // Extract common details
-                                                video_title = info.get("title").and_then(|v| v.as_str()).map(String::from);
-                                                thumbnail_url = info.get("thumbnail").and_then(|v| v.as_str()).map(String::from);
-                                                let ext = info.get("ext").and_then(|v| v.as_str());
-                                                println!("Item {}: Extracted from info.json - title='{:?}', thumb='{:?}', ext='{:?}'", item_id, video_title, thumbnail_url, ext);
-
-                                                // Determine the actual video file path (Priority: _filename)
-                                                if let Some(relative_filename) = info.get("_filename").and_then(|v| v.as_str()) {
-                                                    println!("Item {}: Found '_filename' field in info.json: '{}'", item_id, relative_filename);
-                                                     let potential_path = Path::new(&download_dir).join(relative_filename);
-                                                     if potential_path.exists() {
-                                                        actual_video_path = Some(potential_path.to_string_lossy().to_string());
-                                                        println!("Item {}: Confirmed video path from '_filename' exists: {:?}", item_id, actual_video_path);
-                                                     } else {
-                                                        println!("Item {}: WARNING - Path from '_filename' ('{}') does not exist.", item_id, potential_path.display());
-                                                     }
-                                                }
-
-                                                // Construct path from template (Fallback)
-                                                if actual_video_path.is_none() {
-                                                    println!("Item {}: '_filename' not found/valid in info.json. Attempting path construction...", item_id);
-                                                    if let (Some(title), Some(extension)) = (video_title.as_deref(), ext) {
-                                                        let channel = info.get("channel").and_then(|v| v.as_str()).unwrap_or("UnknownChannel");
-                                                        let base_filename_template = "%(title)s by %(channel)s.%(ext)s";
-                                                        let sanitized_title = sanitize_filename(title);
-                                                        let sanitized_channel = sanitize_filename(channel);
-                                                        println!("Item {}: Constructing filename with title='{}', channel='{}', ext='{}'", item_id, sanitized_title, sanitized_channel, extension);
-                                                        let constructed_filename = base_filename_template
-                                                            .replace("%(title)s", &sanitized_title)
-                                                            .replace("%(channel)s", &sanitized_channel)
-                                                            .replace("%(ext)s", extension);
-                                                        let constructed_path = Path::new(&download_dir).join(&constructed_filename);
-                                                        println!("Item {}: Attempting constructed path: {}", item_id, constructed_path.display());
-                                                        if constructed_path.exists() {
-                                                            actual_video_path = Some(constructed_path.to_string_lossy().to_string());
-                                                            println!("Item {}: Successfully confirmed constructed video path exists: {:?}", item_id, actual_video_path);
-                                                        } else {
-                                                            println!("Item {}: WARNING - Constructed video path does not exist: {}", item_id, constructed_path.display());
-                                                            let video_path_from_json = json_path_str.replace(".info.json", &format!(".{}", extension));
-                                                            println!("Item {}: Trying path derived from info.json filename: {}", item_id, video_path_from_json);
-                                                             if Path::new(&video_path_from_json).exists() {
-                                                                actual_video_path = Some(video_path_from_json);
-                                                                println!("Item {}: Successfully used video path derived from info.json path: {:?}", item_id, actual_video_path);
-                                                             } else {
-                                                                println!("Item {}: WARNING - Video path derived from info.json path also doesn't exist: {}", item_id, video_path_from_json);
-                                                             }
-                                                        }
-                                                    } else {
-                                                        println!("Item {}: WARNING - Could not extract title or extension from info.json to construct path.", item_id);
-                                                    }
-                                                }
+                                        let urls_match = match json_url {
+                                            Some(j_url) => {
+                                                // Try matching by extracted ID first
+                                                let original_id = extract_facebook_video_id(&item_original_url);
+                                                let json_id = extract_facebook_video_id(j_url);
+                                                println!("Item {}: Comparing Original URL '{}' (ID: {:?}) with JSON URL '{}' (ID: {:?})", 
+                                                         item_id, item_original_url, original_id, j_url, json_id);
                                                 
-                                                // Clean up the processed info.json file
-                                                match fs::remove_file(&path) {
-                                                    Ok(_) => println!("Item {}: Removed processed info.json: {}", item_id, json_path_str),
-                                                    Err(e) => eprintln!("Item {}: Failed to remove processed info.json {}: {}", item_id, json_path_str, e),
+                                                if original_id.is_some() && json_id.is_some() && original_id == json_id {
+                                                    println!("Item {}: URLs match based on extracted video ID.", item_id);
+                                                    true // IDs match
+                                                } else {
+                                                    // Fallback to direct string comparison if IDs don't match or couldn't be extracted
+                                                    println!("Item {}: Video IDs don't match or couldn't be extracted. Comparing full URLs.", item_id);
+                                                    j_url == item_original_url
                                                 }
-
-                                                break; // Found the matching json, stop searching
-                                            } else {
-                                                // URL didn't match, log and continue searching
-                                                println!("Item {}: URLs do not match (checked IDs and direct comparison), skipping info.json.", item_id);
+                                            },
+                                            None => {
+                                                 println!("Item {}: No URL found in JSON. Cannot compare.", item_id);
+                                                 false // No URL in JSON to compare
                                             }
+                                        };
+
+                                        if urls_match {
+                                            println!("Item {}: Successfully parsed MATCHING info.json: {}", item_id, json_path_str);
+                                            processed_json = true; // Mark that we parsed the correct JSON
+
+                                            // Extract common details
+                                            video_title = info.get("title").and_then(|v| v.as_str()).map(String::from);
+                                            thumbnail_url = info.get("thumbnail").and_then(|v| v.as_str()).map(String::from);
+                                            let ext = info.get("ext").and_then(|v| v.as_str());
+                                            println!("Item {}: Extracted from info.json - title='{:?}', thumb='{:?}', ext='{:?}'", item_id, video_title, thumbnail_url, ext);
+
+                                            // Determine the actual video file path (Priority: _filename)
+                                            if let Some(relative_filename) = info.get("_filename").and_then(|v| v.as_str()) {
+                                                println!("Item {}: Found '_filename' field in info.json: '{}'", item_id, relative_filename);
+                                                 let potential_path = Path::new(&download_dir).join(relative_filename);
+                                                 if potential_path.exists() {
+                                                    actual_video_path = Some(potential_path.to_string_lossy().to_string());
+                                                    println!("Item {}: Confirmed video path from '_filename' exists: {:?}", item_id, actual_video_path);
+                                                 } else {
+                                                    println!("Item {}: WARNING - Path from '_filename' ('{}') does not exist.", item_id, potential_path.display());
+                                                 }
+                                            }
+
+                                            // Construct path from template (Fallback)
+                                            if actual_video_path.is_none() {
+                                                println!("Item {}: '_filename' not found/valid in info.json. Attempting path construction...", item_id);
+                                                if let (Some(title), Some(extension)) = (video_title.as_deref(), ext) {
+                                                    let channel = info.get("channel").and_then(|v| v.as_str()).unwrap_or("UnknownChannel");
+                                                    let base_filename_template = "%(title)s by %(channel)s.%(ext)s";
+                                                    let sanitized_title = sanitize_filename(title);
+                                                    let sanitized_channel = sanitize_filename(channel);
+                                                    println!("Item {}: Constructing filename with title='{}', channel='{}', ext='{}'", item_id, sanitized_title, sanitized_channel, extension);
+                                                    let constructed_filename = base_filename_template
+                                                        .replace("%(title)s", &sanitized_title)
+                                                        .replace("%(channel)s", &sanitized_channel)
+                                                        .replace("%(ext)s", extension);
+                                                    let constructed_path = Path::new(&download_dir).join(&constructed_filename);
+                                                    println!("Item {}: Attempting constructed path: {}", item_id, constructed_path.display());
+                                                    if constructed_path.exists() {
+                                                        actual_video_path = Some(constructed_path.to_string_lossy().to_string());
+                                                        println!("Item {}: Successfully confirmed constructed video path exists: {:?}", item_id, actual_video_path);
+                                                    } else {
+                                                        println!("Item {}: WARNING - Constructed video path does not exist: {}", item_id, constructed_path.display());
+                                                        let video_path_from_json = json_path_str.replace(".info.json", &format!(".{}", extension));
+                                                        println!("Item {}: Trying path derived from info.json filename: {}", item_id, video_path_from_json);
+                                                         if Path::new(&video_path_from_json).exists() {
+                                                            actual_video_path = Some(video_path_from_json);
+                                                            println!("Item {}: Successfully used video path derived from info.json path: {:?}", item_id, actual_video_path);
+                                                         } else {
+                                                            println!("Item {}: WARNING - Video path derived from info.json path also doesn't exist: {}", item_id, video_path_from_json);
+                                                         }
+                                                    }
+                                                } else {
+                                                    println!("Item {}: WARNING - Could not extract title or extension from info.json to construct path.", item_id);
+                                                }
+                                            }
+                                            
+                                            // Clean up the processed info.json file
+                                            match fs::remove_file(&path) {
+                                                Ok(_) => println!("Item {}: Removed processed info.json: {}", item_id, json_path_str),
+                                                Err(e) => eprintln!("Item {}: Failed to remove processed info.json {}: {}", item_id, json_path_str, e),
+                                            }
+
+                                            break; // Found the matching json, stop searching
                                         } else {
-                                            eprintln!("Item {}: Error parsing JSON content from {}. Skipping.", item_id, json_path_str);
+                                            // URL didn't match, log and continue searching
+                                            println!("Item {}: URLs do not match (checked IDs and direct comparison), skipping info.json.", item_id);
                                         }
                                     } else {
-                                        eprintln!("Item {}: Error reading file content from {}. Skipping.", item_id, json_path_str);
+                                        eprintln!("Item {}: Error parsing JSON content from {}. Skipping.", item_id, json_path_str);
                                     }
+                                } else {
+                                    eprintln!("Item {}: Error reading file content from {}. Skipping.", item_id, json_path_str);
                                 }
-                            } // End of directory iteration
-                        }
-
-                        if !processed_json {
-                             println!("Item {}: WARNING - Could not find a matching .info.json file. Cannot determine exact filename.", item_id);
-                        }
-                        
-                        // --- Update Database with determined info --- 
-                        if actual_video_path.is_none() {
-                             println!("Item {}: CRITICAL WARNING - Final video path could not be determined. Upload WILL likely fail. Storing template path as fallback.", item_id);
-                             // Storing None instead to make the error more obvious later
-                             actual_video_path = None; 
-                        }
-
-                        println!("Item {}: Updating DB status='completed', title='{:?}', path='{:?}', thumb='{:?}'", 
-                            item_id, video_title, actual_video_path, thumbnail_url);
-                        
-                        let update_result = (*db_lock_after).update_item_after_download(
-                            &item_id,
-                            "completed", 
-                            video_title.clone(), // Clone needed for potential event emission
-                            actual_video_path.clone(), // Clone needed for potential event emission
-                            thumbnail_url.clone(), // Clone needed for potential event emission
-                            Some("Download complete".to_string())
-                        );
-                        
-                        if let Err(e) = update_result {
-                            eprintln!("Error updating item {} details after download: {}", item_id, e);
-                        } else {
-                            println!("Item {} details updated after successful download.", item_id);
-                            // --- ADDED: Emit event on successful download & DB update ---
-                            let payload = serde_json::json!({
-                                "id": item_id,
-                                "originalUrl": item_original_url, // Send original URL
-                                "title": video_title,
-                                "localPath": actual_video_path,
-                                "thumbnailUrl": thumbnail_url
-                            });
-                            if let Err(e) = app_handle.emit_all("download_complete", payload) {
-                                eprintln!("Error emitting download_complete event for {}: {}", item_id, e);
                             }
-                            // --- END ADDED ---
-                        }
-                    } else {
-                        // Update status to failed on error (already done within error handling above)
-                        // No need to update status again here unless a new error occurred
+                        } // End of directory iteration
                     }
 
-                    // Check for auto-upload (keep this logic)
-                    let settings_after = match (*db_lock_after).get_settings() {
+                    if !processed_json {
+                         println!("Item {}: WARNING - Could not find a matching .info.json file. Cannot determine exact filename.", item_id);
+                    }
+                    
+                    // Update Database with determined info
+                    if actual_video_path.is_none() {
+                         println!("Item {}: CRITICAL WARNING - Final video path could not be determined. Upload WILL likely fail. Storing template path as fallback.", item_id);
+                         // Storing None instead to make the error more obvious later
+                         actual_video_path = None; 
+                    }
+
+                    println!("Item {}: Updating DB status='completed', title='{:?}', path='{:?}', thumb='{:?}'", 
+                        item_id, video_title, actual_video_path, thumbnail_url);
+                    
+                    let update_result = app_state.db.update_item_after_download(
+                        &item_id,
+                        "completed", 
+                        video_title.clone(), // Clone needed for potential event emission
+                        actual_video_path.clone(), // Clone needed for potential event emission
+                        thumbnail_url.clone(), // Clone needed for potential event emission
+                        Some("Download complete".to_string())
+                    ).await;
+                    
+                    if let Err(e) = update_result {
+                        eprintln!("Error updating item {} details after download: {}", item_id, e);
+                    } else {
+                        println!("Item {} details updated after successful download.", item_id);
+                        // Emit event on successful download & DB update
+                        let payload = serde_json::json!({
+                            "id": item_id,
+                            "originalUrl": item_original_url, // Send original URL
+                            "title": video_title,
+                            "localPath": actual_video_path,
+                            "thumbnailUrl": thumbnail_url
+                        });
+                        if let Err(e) = app_handle.emit_all("download_complete", payload) {
+                            eprintln!("Error emitting download_complete event for {}: {}", item_id, e);
+                        }
+                    }
+
+                    // Check for auto-upload
+                    let settings_after = match app_state.db.get_settings().await {
                         Ok(s) => s,
                         Err(_) => AppSettings::default()
                     };
@@ -1380,24 +1314,18 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                 println!("Skipping download for item {} due to previous error.", item_id);
                 // No need to sleep long here, the outer loop handles it
             }
-            // --- End Download Execution --- 
+            // End Download Execution
 
         } else {
-            // --- Check status of transferring/encoding items if no new item to process ---
-            let items_to_check: Vec<(String, String, String)>;
-            {
-                let state: State<'_, AppState> = app_handle.state();
-                // Define db_lock before using it
-                let db_lock = state.db.lock().unwrap(); 
-                // Explicitly dereference db_lock
-                items_to_check = match (*db_lock).get_items_for_status_check() {
-                    Ok(items) => items,
-                    Err(e) => {
-                        eprintln!("DB Error fetching items for status check: {}", e);
-                        Vec::new() // Empty vec on error
-                    }
-                };
-            }
+            // Check status of transferring/encoding items if no new item to process
+            let app_state: State<'_, AppState> = app_handle.state();
+            let items_to_check = match app_state.db.get_items_for_status_check().await {
+                Ok(items) => items,
+                Err(e) => {
+                    eprintln!("DB Error fetching items for status check: {}", e);
+                    Vec::new() // Empty vec on error
+                }
+            };
 
             if !items_to_check.is_empty() {
                 should_sleep_long = false; // Found items to check, don't sleep long
@@ -1418,7 +1346,6 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
         // Sleep before next check
         let sleep_duration = if should_sleep_long { Duration::from_secs(15) } else { Duration::from_secs(5) }; // Check status more often than new items
         sleep(sleep_duration).await;
-        
     }
 }
 // --- End Background Queue Processing ---
@@ -1463,21 +1390,25 @@ async fn main() {
                     }
                 }
             }
+            
+            // Initialize database
             let db = Database::new(&app.handle()).expect("Failed to initialize database");
-            app.manage(AppState { db: Arc::new(Mutex::new(db)) });
+            app.manage(AppState { db: Arc::new(db) });
 
-            // --- Spawn the background queue processor ---
+            // Spawn the background queue processor
             let app_handle_clone = app.handle().clone();
-            tokio::spawn(process_queue_background(app_handle_clone));
+            tokio::spawn(async move {
+                process_queue_background(app_handle_clone).await;
+            });
 
-            // --- Temporarily enable DevTools for release build debugging ---
-            // #[cfg(debug_assertions)]
+            // Enable DevTools
+            #[cfg(debug_assertions)]
             {
                 let window = app.get_window("main").unwrap();
                 window.open_devtools();
                 window.close_devtools(); // Close initially, user can reopen with F12
             }
-            // --- End Temporary DevTools ---
+            
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -23,6 +23,7 @@ import {
 } from '@/lib/tauri-api';
 import { createEmptySettings } from '@/lib/settings-helper';
 import { fetch as tauriFetch, Body } from '@tauri-apps/api/http'; // Import Tauri fetch AND Body
+import { listen } from '@tauri-apps/api/event'; // Import event listener
 
 // Define context value type
 interface TauriContextType {
@@ -39,7 +40,7 @@ interface TauriContextType {
   openLink: (url: string) => Promise<void>;
   getDefaultDownloadDir: () => Promise<string>;
   importFromFile: (path: string) => Promise<void>;
-  retryItem: (id: string) => Promise<void>;
+  retryItem: (id: string) => Promise<string>;
   triggerUpload: (id: string) => Promise<{success: boolean, message: string}>;
   cancelItem: (id: string) => Promise<{success: boolean, message: string}>;
   restartEncoding: (id: string) => Promise<{success: boolean, message: string}>;
@@ -62,7 +63,7 @@ const TauriContext = createContext<TauriContextType>({
   openLink: async () => {},
   getDefaultDownloadDir: async () => "",
   importFromFile: async () => {},
-  retryItem: async () => {},
+  retryItem: async () => "",
   triggerUpload: async () => ({success: false, message: 'Provider not ready'}),
   cancelItem: async () => ({success: false, message: 'Provider not ready'}),
   restartEncoding: async () => ({success: false, message: 'Provider not ready'}),
@@ -169,6 +170,50 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     initialize();
   }, [fetchQueueItems, getAppSettings]);
 
+  // Set up event listeners
+  useEffect(() => {
+    if (!isTauriEnvironment) return;
+
+    let unlistenFn: (() => void) | undefined;
+
+    const setupListeners = async () => {
+      try {
+        // Listen for download completion events
+        unlistenFn = await listen<{ id: string, title?: string, localPath?: string, thumbnailUrl?: string }>('download_complete', (event) => {
+          console.log('Received download_complete event:', event);
+          
+          // Immediately update the queue items to reflect the completed download
+          setQueueItems(prevItems => 
+            prevItems.map(item => 
+              item.id === event.payload.id
+                ? {
+                    ...item,
+                    status: 'completed',
+                    title: event.payload.title || item.title,
+                    local_path: event.payload.localPath || item.local_path,
+                    thumbnail_url: event.payload.thumbnailUrl || item.thumbnail_url,
+                    message: 'Download complete'
+                  }
+                : item
+            )
+          );
+          
+          // Also fetch the latest queue data from the backend
+          fetchQueueItems();
+        });
+      } catch (err) {
+        console.error("Error setting up event listeners:", err);
+      }
+    };
+
+    setupListeners();
+
+    // Return cleanup function
+    return () => {
+      if (unlistenFn) unlistenFn();
+    };
+  }, [isTauriEnvironment, fetchQueueItems]);
+
   const addToQueue = useCallback(async (item: QueueItem) => {
     const id = await addQueueItem(item);
     await fetchQueueItems();
@@ -213,10 +258,12 @@ export function TauriProvider({ children }: { children: ReactNode }) {
 
   const handleRetryItem = useCallback(async (id: string) => {
     try {
-      await retryItem(id);
+      const message = await retryItem(id);
       await fetchQueueItems();
+      return message;
     } catch (err) {
       console.error(`Error retrying item ${id}:`, err);
+      throw err;
     }
   }, [fetchQueueItems]);
 

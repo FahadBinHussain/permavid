@@ -256,7 +256,17 @@ const QueueListItem: React.FC<QueueItemProps> = ({
                    {/* Retry Download/Upload Button */}
                    {item.status === 'failed' && !item.filemoon_url && !item.files_vc_url && ( 
                      renderButton(
-                       'Retry',
+                       // Show "Retry Upload" if there's a local path or upload-related error message
+                       (item.local_path || 
+                        (item.message && (
+                          item.message.includes("API key") || 
+                          item.message.includes("Upload") || 
+                          item.message.includes("upload") || 
+                          item.message.includes("Filemoon") || 
+                          item.message.includes("Files.vc")
+                        )) 
+                        ? 'Retry Upload' 
+                        : 'Retry'),
                        () => handleAction(onRetry),
                        'bg-yellow-500',
                        'hover:bg-yellow-600',
@@ -516,8 +526,27 @@ export default function Home() {
     setMessage('');
     setError('');
     try {
-      await tauriRetryItem(itemId);
-      setMessage('Item re-queued successfully.');
+      const responseMessage = await tauriRetryItem(itemId);
+      
+      // Check if this is an upload retry based on the response message
+      if (responseMessage && responseMessage.includes("prepared for upload retry")) {
+        // If this was an upload retry, automatically trigger the upload
+        setMessage('Retrying upload...');
+        try {
+          const uploadResult = await tauriTriggerUpload(itemId);
+          if (uploadResult.success) {
+            setMessage(uploadResult.message || 'Upload retriggered successfully.');
+          } else {
+            throw new Error(uploadResult.message || 'Upload retriggering failed');
+          }
+        } catch (uploadError: any) {
+          console.error(`Error retriggering upload for item ${itemId}:`, uploadError);
+          setError(`Failed to retrigger upload: ${uploadError.message || String(uploadError)}`);
+        }
+      } else {
+        // Normal download retry
+        setMessage(responseMessage || 'Item re-queued successfully.');
+      }
     } catch (retryError: any) {
       console.error(`Error retrying item ${itemId} via Tauri:`, retryError);
       setError(`Failed to retry item ${itemId}: ${retryError.message || String(retryError)}`);

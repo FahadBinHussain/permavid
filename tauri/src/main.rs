@@ -305,19 +305,52 @@ async fn retry_item(id: String, app_state: State<'_, AppState>) -> Result<Respon
     let item_result = app_state.db.get_item_by_id(&id).await;
     match item_result {
         Ok(Some(item)) => {
-            if item.status == "failed" && item.filemoon_url.is_none() && item.files_vc_url.is_none() {
-                match app_state.db.update_item_status(&id, "queued", Some("Retrying...".to_string())).await {
-                    Ok(_) => Ok(Response {
+            if item.status == "failed" {
+                // Check if this was an upload failure or a download failure
+                let is_upload_failure = match &item.message {
+                    Some(msg) => {
+                        msg.contains("API key") || 
+                        msg.contains("Upload") || 
+                        msg.contains("upload") || 
+                        msg.contains("Filemoon") ||
+                        msg.contains("Files.vc")
+                    },
+                    None => false
+                };
+
+                // Check if the item has a local path (indicating it was downloaded successfully)
+                let has_local_path = item.local_path.is_some() && !item.local_path.as_ref().unwrap().is_empty();
+
+                if is_upload_failure || has_local_path {
+                    println!("Retrying upload for item {}", id);
+                    // This was an upload failure, so trigger upload directly
+                    if let Err(e) = app_state.db.update_item_status(&id, "completed", Some("Preparing to retry upload...".to_string())).await {
+                        return Err(format!("Database error updating status: {}", e));
+                    }
+                    
+                    // Return success and let the trigger_upload command be called separately
+                    return Ok(Response {
                         success: true,
-                        message: "Item re-queued for processing.".to_string(),
+                        message: "Item prepared for upload retry.".to_string(),
                         data: None,
-                    }),
-                    Err(e) => Err(format!("Database error updating status: {}", e)),
+                    });
+                } else if item.filemoon_url.is_none() && item.files_vc_url.is_none() {
+                    // This was a download failure, so requeue for download
+                    match app_state.db.update_item_status(&id, "queued", Some("Retrying download...".to_string())).await {
+                        Ok(_) => Ok(Response {
+                            success: true,
+                            message: "Item re-queued for download.".to_string(),
+                            data: None,
+                        }),
+                        Err(e) => Err(format!("Database error updating status: {}", e)),
+                    }
+                } else {
+                    Err(format!("Item is not in a retryable failed state (status: {}, has_upload_url: {}).",
+                            item.status,
+                            item.filemoon_url.is_some() || item.files_vc_url.is_some()))
                 }
             } else {
-                Err(format!("Item is not in a retryable failed state (status: {}, has_upload_url: {}).",
-                         item.status,
-                         item.filemoon_url.is_some() || item.files_vc_url.is_some()))
+                Err(format!("Item is not in a failed state (status: {}).", item.status))
             }
         }
         Ok(None) => Err(format!("Retry failed: Item {} not found.", id)),

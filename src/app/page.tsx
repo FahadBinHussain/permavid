@@ -334,6 +334,7 @@ export default function Home() {
   // --- Settings State ---
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [missingApiKey, setMissingApiKey] = useState(false); // Track if modal opened due to missing API key
 
   const [showClearDropdown, setShowClearDropdown] = useState(false);
   type FilterStatus = QueueItem['status'] | 'all';
@@ -488,15 +489,44 @@ export default function Home() {
     setMessage('');
     setError('');
     try {
-      const result = await tauriTriggerUpload(itemId); 
+      // Prevent any unhandled rejections or unexpected errors
+      const result = await tauriTriggerUpload(itemId).catch(err => {
+        return { 
+          success: false, 
+          message: err instanceof Error ? err.message : String(err) 
+        };
+      });
+      
       if (result.success) {
         setMessage(result.message || `Upload initiated/completed for item ${itemId}.`);
       } else {
+        // Check for specific API key error
+        if (result.message && result.message.includes("API key not configured")) {
+          setError("Please configure your Filemoon API key in settings to upload files.");
+          // Set flag and open settings modal
+          setMissingApiKey(true);
+          setShowSettingsModal(true);
+          // Use toast for additional notification
+          toast.error("API key missing. Opening settings...");
+          return;
+        }
         throw new Error(result.message || 'Upload failed via Tauri');
       }
     } catch (uploadError: any) {
       console.error(`Error uploading item ${itemId} via Tauri:`, uploadError);
-      setError(`Failed to upload item ${itemId}: ${uploadError.message || String(uploadError)}`); // Improved error display
+      
+      // Check error message for API key issues as well (in case it comes through the catch block)
+      const errorMsg = uploadError.message || String(uploadError);
+      if (errorMsg.includes("API key not configured")) {
+        setError("Please configure your Filemoon API key in settings to upload files.");
+        // Set flag and open settings modal
+        setMissingApiKey(true);
+        setShowSettingsModal(true);
+        // Use toast for additional notification
+        toast.error("API key missing. Opening settings...");
+      } else {
+        setError(`Failed to upload item ${itemId}: ${errorMsg}`);
+      }
     } finally {
       setUploadingItemId(null);
     }
@@ -525,29 +555,79 @@ export default function Home() {
     setRetryingItemId(itemId);
     setMessage('');
     setError('');
+    
     try {
       const responseMessage = await tauriRetryItem(itemId);
+      
+      // If response contains an error indication, handle it
+      if (responseMessage.includes('failed') || responseMessage.includes('Failed') || responseMessage.includes('error') || responseMessage.includes('Error')) {
+        // API key specific error handling
+        if (responseMessage.includes("API key not configured")) {
+          setError("Please configure your Filemoon API key in settings to upload files.");
+          // Set flag and open settings modal
+          setMissingApiKey(true);
+          setShowSettingsModal(true);
+          // Use toast for additional notification
+          toast.error("API key missing. Opening settings...");
+          return;
+        }
+        
+        // General error handling
+        setError(`Failed to retry item: ${responseMessage}`);
+        return;
+      }
       
       // Check if this is an upload retry based on the response message
       if (responseMessage && responseMessage.includes("prepared for upload retry")) {
         // If this was an upload retry, automatically trigger the upload
         setMessage('Retrying upload...');
         try {
-          const uploadResult = await tauriTriggerUpload(itemId);
+          // Prevent any unhandled rejections or unexpected errors
+          const uploadResult = await tauriTriggerUpload(itemId).catch(err => {
+            return { 
+              success: false, 
+              message: err instanceof Error ? err.message : String(err) 
+            };
+          });
+          
           if (uploadResult.success) {
             setMessage(uploadResult.message || 'Upload retriggered successfully.');
           } else {
-            throw new Error(uploadResult.message || 'Upload retriggering failed');
+            // Check for API key error
+            if (uploadResult.message && uploadResult.message.includes("API key not configured")) {
+              setError("Please configure your Filemoon API key in settings to upload files.");
+              // Set flag and open settings modal
+              setMissingApiKey(true);
+              setShowSettingsModal(true);
+              // Use toast for additional notification
+              toast.error("API key missing. Opening settings...");
+              return;
+            }
+            setError(uploadResult.message || 'Upload retriggering failed');
           }
         } catch (uploadError: any) {
+          // This catch block should rarely be executed now with our improved error handling
           console.error(`Error retriggering upload for item ${itemId}:`, uploadError);
-          setError(`Failed to retrigger upload: ${uploadError.message || String(uploadError)}`);
+          
+          // Check error message for API key issues
+          const errorMsg = uploadError.message || String(uploadError);
+          if (errorMsg.includes("API key not configured")) {
+            setError("Please configure your Filemoon API key in settings to upload files.");
+            // Set flag and open settings modal
+            setMissingApiKey(true);
+            setShowSettingsModal(true);
+            // Use toast for additional notification
+            toast.error("API key missing. Opening settings...");
+          } else {
+            setError(`Failed to retrigger upload: ${errorMsg}`);
+          }
         }
       } else {
         // Normal download retry
         setMessage(responseMessage || 'Item re-queued successfully.');
       }
     } catch (retryError: any) {
+      // This catch block should rarely be executed now with our improved error handling
       console.error(`Error retrying item ${itemId} via Tauri:`, retryError);
       setError(`Failed to retry item ${itemId}: ${retryError.message || String(retryError)}`);
     } finally {
@@ -586,7 +666,11 @@ export default function Home() {
       await tauriSaveSettings(settingsToSave); 
       
       setMessage('Settings saved successfully.');
-      setShowSettingsModal(false); 
+      setShowSettingsModal(false);
+      setMissingApiKey(false); // Reset the missing API key flag
+      
+      // Show success toast
+      toast.success('Settings saved successfully');
     } catch (saveError: any) {
       console.error('Error saving settings:', saveError);
       setError(`Failed to save settings: ${saveError.message || String(saveError)}`);
@@ -691,21 +775,33 @@ export default function Home() {
         handleSaveSettings(settingsToSave);
     }
     
-    // Helper for input fields
-    const renderInput = (id: string, label: string, placeholder: string, value: string | undefined, onChange: (val: string) => void, type = "text", helpText?: string) => (
-        <div className="mb-4">
-            <label htmlFor={id} className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
-            <input
-                id={id}
-                type={type} 
-                value={value || ''}
-                onChange={(e) => onChange(e.target.value)}
-                placeholder={placeholder}
-                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-gray-900" // Ensure text color is dark
-            />
-            {helpText && <p className="mt-1 text-xs text-gray-500">{helpText}</p>}
+    // Helper for input fields with optional highlight effect
+    const renderInput = (id: string, label: string, placeholder: string, value: string | undefined, onChange: (val: string) => void, type = "text", helpText?: string) => {
+      // Check if this is the API key field and if it should be highlighted
+      const isApiKeyField = id === "filemoonApiKey";
+      const shouldHighlight = isApiKeyField && missingApiKey;
+      
+      return (
+        <div className={`mb-4 ${shouldHighlight ? 'animate-pulse' : ''}`}>
+          <label htmlFor={id} className={`block text-sm font-medium ${shouldHighlight ? 'text-red-600 font-bold' : 'text-gray-700'} mb-1`}>
+            {label} {shouldHighlight && '(Required)'}
+          </label>
+          <input
+              id={id}
+              type={type} 
+              value={value || ''}
+              onChange={(e) => onChange(e.target.value)}
+              placeholder={placeholder}
+              className={`mt-1 block w-full px-3 py-2 border ${shouldHighlight ? 'border-red-500 bg-red-50' : 'border-gray-300'} rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-gray-900`}
+              autoFocus={shouldHighlight}
+          />
+          {helpText && <p className={`mt-1 text-xs ${shouldHighlight ? 'text-red-500 font-medium' : 'text-gray-500'}`}>{helpText}</p>}
+          {shouldHighlight && (
+            <p className="mt-1 text-xs text-red-600">This field is required for uploads. Please enter your Filemoon API key.</p>
+          )}
         </div>
-    );
+      );
+    };
     
     // Helper for checkboxes
     const renderCheckbox = (id: string, label: string, checked: boolean, onChange: (checked: boolean) => void) => (
@@ -723,10 +819,18 @@ export default function Home() {
         </div>
     );
 
+    // Function to close modal and reset flags
+    const handleCloseModal = () => {
+      setShowSettingsModal(false);
+      setMissingApiKey(false);
+    };
+
     return (
         <div className="fixed inset-0 bg-gray-900 bg-opacity-50 backdrop-blur-sm flex justify-center items-center z-50 p-4">
             <div className="bg-white p-6 md:p-8 rounded-lg shadow-xl w-full max-w-lg transform transition-all sm:scale-100"> 
-                <h2 className="text-xl font-semibold mb-6 text-gray-800">Application Settings</h2>
+                <h2 className="text-xl font-semibold mb-6 text-gray-800">
+                  {missingApiKey ? '⚠️ API Key Required for Uploads' : 'Application Settings'}
+                </h2>
                 
                 {isLoadingSettings ? (
                    <div className="flex justify-center items-center h-40">
@@ -739,7 +843,9 @@ export default function Home() {
                       "Filemoon API Key", 
                       "Enter your Filemoon API Key", 
                       modalSettings.filemoon_api_key, 
-                      (val) => setModalSettings(prev => ({ ...prev, filemoon_api_key: val }))
+                      (val) => setModalSettings(prev => ({ ...prev, filemoon_api_key: val })),
+                      "text",
+                      "Required for uploading videos to Filemoon"
                     )}
                     {/* Files.vc API input removed as requested */}
                     <div className="mb-2 p-2 bg-gray-50 border border-gray-200 rounded text-sm text-gray-700">
@@ -788,7 +894,7 @@ export default function Home() {
                     <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
                         <button
                             type="button"
-                            onClick={() => setShowSettingsModal(false)}
+                            onClick={handleCloseModal}
                             disabled={isSavingSettings}
                             className="py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 transition-colors"
                         >

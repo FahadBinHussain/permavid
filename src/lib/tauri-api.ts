@@ -168,18 +168,23 @@ export async function importFromFile(path: string) {
 }
 
 // --- ADDED: Function to retry an item ---
-export async function retryItem(id: string) {
+export async function retryItem(id: string): Promise<string> {
   try {
     // Result should be { success: boolean, message: string, data: null }
     const response: any = await invoke('retry_item', { id }); 
     if (!response || !response.success) {
-      throw new Error(response?.message || 'Failed to retry item in backend.');
+      return response?.message || 'Failed to retry item in backend.';
     }
-    // Optionally return the success message
+    // Return the success message
     return response.message;
   } catch (error) {
-    console.error('Error retrying item via Tauri:', error);
-    throw error; // Re-throw to be caught by UI
+    // Don't log API key configuration errors to console
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (!errorMessage.includes("API key not configured")) {
+      console.error('Error retrying item via Tauri:', error);
+    }
+    // Return the error message as a string instead of throwing
+    return errorMessage;
   }
 }
 // --- END ADDED ---
@@ -192,11 +197,16 @@ export async function triggerUpload(id: string): Promise<UploadResponse> {
     // No need to check success here, let the caller handle the full response
     return response;
   } catch (error) {
-    console.error('Error triggering upload via Tauri:', error);
+    // Don't log API key configuration errors to console - they're expected and handled in the UI
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (!errorMessage.includes("API key not configured")) {
+      console.error('Error triggering upload via Tauri:', error);
+    }
+    
     // Ensure a consistent error response structure
     return {
       success: false,
-      message: error instanceof Error ? error.message : 'Unknown error triggering upload',
+      message: errorMessage,
     };
   }
 }

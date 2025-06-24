@@ -262,15 +262,27 @@ export function TauriProvider({ children }: { children: ReactNode }) {
       await fetchQueueItems();
       return message;
     } catch (err) {
-      console.error(`Error retrying item ${id}:`, err);
-      throw err;
+      // No need to log here, it's already logged in the retryItem function
+      return String(err);
     }
   }, [fetchQueueItems]);
 
   const handleTriggerUpload = useCallback(async (id: string) => {
-    const result = await triggerUpload(id);
-    await fetchQueueItems();
-    return result;
+    try {
+      const result = await triggerUpload(id);
+      await fetchQueueItems();
+      return result;
+    } catch (err) {
+      // In case of any unexpected error not caught by triggerUpload
+      // Don't log API key errors
+      if (!(err instanceof Error && err.message.includes("API key not configured"))) {
+        console.error(`Unexpected error in handleTriggerUpload for ${id}:`, err);
+      }
+      return {
+        success: false,
+        message: err instanceof Error ? err.message : String(err)
+      };
+    }
   }, [fetchQueueItems]);
 
   const handleCancelItem = useCallback(async (id: string) => {

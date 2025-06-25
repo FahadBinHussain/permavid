@@ -72,7 +72,9 @@
         "script-src": ["'self'", "'unsafe-eval'"],
         "connect-src": ["'self'", "https://accounts.google.com", "https://oauth2.googleapis.com", "https://www.googleapis.com"],
         "img-src": ["'self'", "data:", "https:", "http:"],
-        "font-src": ["'self'", "data:"]
+        "font-src": ["'self'", "data:"],
+        "frame-src": ["'self'", "https://accounts.google.com", "https://oauth2.googleapis.com", "https://www.googleapis.com"],
+        "child-src": ["'self'", "https://accounts.google.com", "https://oauth2.googleapis.com", "https://www.googleapis.com"]
       }
     },
     "updater": {

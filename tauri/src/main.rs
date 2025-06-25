@@ -1404,6 +1404,32 @@ async fn main() {
             get_gallery_items
         ])
         .setup(|app| {
+            // Load .env.local file if it exists
+            if let Ok(env_path) = std::env::current_dir().map(|d| d.join(".env.local")) {
+                if env_path.exists() {
+                    println!("Loading environment variables from .env.local");
+                    dotenv::from_path(env_path).ok();
+                }
+            }
+
+            // Set environment variables for authentication
+            if let Ok(google_client_id) = std::env::var("GOOGLE_CLIENT_ID") {
+                std::env::set_var("GOOGLE_CLIENT_ID", google_client_id);
+            }
+            
+            if let Ok(google_client_secret) = std::env::var("GOOGLE_CLIENT_SECRET") {
+                std::env::set_var("GOOGLE_CLIENT_SECRET", google_client_secret);
+            }
+            
+            if let Ok(nextauth_url) = std::env::var("NEXTAUTH_URL") {
+                std::env::set_var("NEXTAUTH_URL", nextauth_url);
+            }
+            
+            if let Ok(nextauth_secret) = std::env::var("NEXTAUTH_SECRET") {
+                std::env::set_var("NEXTAUTH_SECRET", nextauth_secret);
+            }
+            
+            // Handle database file
             if let Ok(app_dir) = std::env::current_dir() {
                 let source_db = app_dir.join("permavid_local.sqlite");
                 if source_db.exists() {

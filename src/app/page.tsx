@@ -37,6 +37,7 @@ import { QueueItem, AppSettings } from '@/lib/tauri-api'; // <-- Import types
 import { createEmptySettings } from '@/lib/settings-helper'; // Import factory function
 import { listen } from '@tauri-apps/api/event'; // <-- Import listen
 import { toast } from 'react-hot-toast';
+import UserProfile from '@/components/UserProfile';
 
 // --- Updated Icons with consistent size ---
 const iconClass = "h-4 w-4 inline-block mr-1.5 align-text-bottom"; // Consistent icon styling
@@ -968,7 +969,7 @@ export default function Home() {
      <main className="flex min-h-screen flex-col items-center p-4 sm:p-6 md:p-8 bg-gray-50 dark:bg-gray-900">
        <div className="w-full max-w-6xl flex justify-between items-center mb-6">
          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">PermaVid</h1>
-         <div className="flex space-x-4">
+         <div className="flex items-center space-x-4">
            <Link 
              href="/archives" 
              className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
@@ -981,6 +982,7 @@ export default function Home() {
            >
              Settings
            </button>
+           <UserProfile />
          </div>
        </div>
 

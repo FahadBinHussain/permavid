@@ -13,12 +13,19 @@ project:PermaVid"
    ```bash
    pnpm install
    ```
-2. Run the Tauri app in development mode:
+2. **Set up Google Authentication** (required):
+   - Create a `.env.local` file with your Google OAuth credentials
+   - See [Authentication Setup](./docs/AUTH_SETUP.md) for detailed instructions
+3. Run the Tauri app in development mode:
    ```bash
    pnpm run dev:tauri
    ```
 
 ---
+
+## Authentication
+
+PermaVid now requires users to sign in with Google when the application launches. This helps secure your archives and provides a personalized experience. See [Authentication Setup](./docs/AUTH_SETUP.md) for instructions on configuring Google OAuth.
 
 ## Database Setup with Neon PostgreSQL
 

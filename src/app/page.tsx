@@ -667,7 +667,7 @@ export default function Home() {
       await tauriSaveSettings(settingsToSave); 
       
       setMessage('Settings saved successfully.');
-      setShowSettingsModal(false);
+      setShowSettingsModal(false); 
       setMissingApiKey(false); // Reset the missing API key flag
       
       // Show success toast
@@ -787,21 +787,21 @@ export default function Home() {
           <label htmlFor={id} className={`block text-sm font-medium ${shouldHighlight ? 'text-red-600 font-bold' : 'text-gray-700'} mb-1`}>
             {label} {shouldHighlight && '(Required)'}
           </label>
-          <input
-              id={id}
-              type={type} 
-              value={value || ''}
-              onChange={(e) => onChange(e.target.value)}
-              placeholder={placeholder}
+            <input
+                id={id}
+                type={type} 
+                value={value || ''}
+                onChange={(e) => onChange(e.target.value)}
+                placeholder={placeholder}
               className={`mt-1 block w-full px-3 py-2 border ${shouldHighlight ? 'border-red-500 bg-red-50' : 'border-gray-300'} rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-gray-900`}
               autoFocus={shouldHighlight}
-          />
+            />
           {helpText && <p className={`mt-1 text-xs ${shouldHighlight ? 'text-red-500 font-medium' : 'text-gray-500'}`}>{helpText}</p>}
           {shouldHighlight && (
             <p className="mt-1 text-xs text-red-600">This field is required for uploads. Please enter your Filemoon API key.</p>
           )}
         </div>
-      );
+    );
     };
     
     // Helper for checkboxes

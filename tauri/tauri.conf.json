@@ -4,7 +4,7 @@
     "beforeBuildCommand": "npm run build:next",
     "devPath": "http://localhost:3000",
     "distDir": "../out",
-    "withGlobalTauri": false
+    "withGlobalTauri": true
   },
   "package": {
     "productName": "PermaVid",
@@ -15,7 +15,14 @@
       "all": false,
       "shell": {
         "all": false,
-        "open": true
+        "open": true,
+        "scope": [
+          {
+            "name": "open-google-auth",
+            "cmd": "open",
+            "args": true
+          }
+        ]
       },
       "fs": {
         "all": true,
@@ -36,6 +43,14 @@
         "all": true,
         "request": true,
         "scope": ["https://**", "http://**"]
+      },
+      "window": {
+        "all": true,
+        "create": true,
+        "close": true,
+        "center": true,
+        "maximize": true,
+        "minimize": true
       }
     },
     "bundle": {
@@ -51,7 +66,14 @@
       "targets": "all"
     },
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": ["'self'"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "script-src": ["'self'", "'unsafe-eval'"],
+        "connect-src": ["'self'", "https://accounts.google.com", "https://oauth2.googleapis.com", "https://www.googleapis.com"],
+        "img-src": ["'self'", "data:", "https:", "http:"],
+        "font-src": ["'self'", "data:"]
+      }
     },
     "updater": {
       "active": false

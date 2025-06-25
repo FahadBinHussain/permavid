@@ -7,6 +7,7 @@ import { useAuth } from '../../auth-provider';
 
 export default function SignIn() {
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const router = useRouter();
   const { user, status, signIn } = useAuth();
 
@@ -20,10 +21,12 @@ export default function SignIn() {
   const handleGoogleSignIn = async () => {
     try {
       setIsLoading(true);
+      setError(null);
       await signIn('google');
       // Auth provider will handle redirects after successful sign-in
     } catch (error) {
       console.error('Error signing in with Google:', error);
+      setError(error instanceof Error ? error.message : 'Authentication failed');
       setIsLoading(false);
     }
   };
@@ -45,19 +48,25 @@ export default function SignIn() {
       <div className="w-full max-w-md p-8 space-y-8 bg-white dark:bg-gray-800 rounded-xl shadow-lg">
         <div className="text-center">
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Welcome to PermaVid</h1>
-          <p className="text-gray-600 dark:text-gray-400 mb-8">Sign in to continue to your account</p>
+          <p className="text-gray-600 dark:text-gray-400 mb-6">Sign in with your Google account</p>
         </div>
+        
+        {error && (
+          <div className="bg-red-50 text-red-700 p-3 rounded-md text-sm mb-4">
+            {error}
+          </div>
+        )}
         
         <div className="space-y-6">
           <button
             onClick={handleGoogleSignIn}
             disabled={isLoading}
-            className="w-full flex items-center justify-center px-4 py-2 border border-gray-300 dark:border-gray-700 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 transition-colors"
+            className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 dark:border-gray-700 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 transition-colors"
           >
             {isLoading ? (
               <div className="flex items-center">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2"></div>
-                <span>Signing in...</span>
+                <span>Connecting to Google...</span>
               </div>
             ) : (
               <>
@@ -75,7 +84,14 @@ export default function SignIn() {
           </button>
         </div>
         
-        <div className="mt-8 text-center text-xs text-gray-500 dark:text-gray-400">
+        <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+          <p className="text-center text-xs text-gray-500 dark:text-gray-400">
+            We use Google authentication to secure your account.<br />
+            Your Google email address will be used to identify you in PermaVid.
+          </p>
+        </div>
+        
+        <div className="mt-4 text-center text-xs text-gray-500 dark:text-gray-400">
           <p>By signing in, you agree to our Terms of Service and Privacy Policy</p>
         </div>
       </div>

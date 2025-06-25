@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 
-// Check if we're in a Tauri environment
+// Check if we're in a Tauri environment - safely for SSR
 const isTauri = typeof window !== 'undefined' && 
                ((window as any).__TAURI__ !== undefined || 
                (typeof navigator !== 'undefined' && navigator.userAgent.includes('Tauri')));
@@ -40,48 +40,51 @@ export default function AuthCallback() {
           console.log('In Tauri environment, sending message to main window');
           
           // In Tauri, we need to send the message to the main window
-          try {
-            // Use window.opener if available (works in some Tauri setups)
-            if (window.opener) {
-              window.opener.postMessage({
-                type: 'OAUTH_CALLBACK',
-                token,
-              }, window.location.origin);
-              console.log('Sent token via window.opener');
-            }
-            
-            // Also try to send via WebviewWindow API
-            if ((window as any).__TAURI__?.window) {
-              const { WebviewWindow } = (window as any).__TAURI__.window;
-              const mainWindow = WebviewWindow.getByLabel('main');
-              
-              if (mainWindow) {
-                mainWindow.emit('OAUTH_CALLBACK', { 
+          (async () => {
+            try {
+              // Use window.opener if available (works in some Tauri setups)
+              if (window.opener) {
+                window.opener.postMessage({
                   type: 'OAUTH_CALLBACK',
-                  token
-                });
-                console.log('Sent token via Tauri WebviewWindow emit');
+                  token,
+                }, window.location.origin);
+                console.log('Sent token via window.opener');
               }
-            }
-            
-            // Try to close this window after sending
-            setTimeout(() => {
+              
+              // Also try to send via WebviewWindow API
               if ((window as any).__TAURI__?.window) {
-                const { getCurrent } = (window as any).__TAURI__.window;
-                const currentWindow = getCurrent();
-                if (currentWindow) {
-                  currentWindow.close();
+                // Dynamically import Tauri API
+                const { WebviewWindow } = (window as any).__TAURI__.window;
+                const mainWindow = WebviewWindow.getByLabel('main');
+                
+                if (mainWindow) {
+                  mainWindow.emit('OAUTH_CALLBACK', { 
+                    type: 'OAUTH_CALLBACK',
+                    token
+                  });
+                  console.log('Sent token via Tauri WebviewWindow emit');
                 }
               }
-              // Fallback if window didn't close
+              
+              // Try to close this window after sending
               setTimeout(() => {
-                window.location.href = '/';
-              }, 500);
-            }, 1000);
-          } catch (e) {
-            console.error('Error in Tauri auth callback:', e);
-            window.location.href = '/';
-          }
+                if ((window as any).__TAURI__?.window) {
+                  const { getCurrent } = (window as any).__TAURI__.window;
+                  const currentWindow = getCurrent();
+                  if (currentWindow) {
+                    currentWindow.close();
+                  }
+                }
+                // Fallback if window didn't close
+                setTimeout(() => {
+                  window.location.href = '/';
+                }, 500);
+              }, 1000);
+            } catch (e) {
+              console.error('Error in Tauri auth callback:', e);
+              window.location.href = '/';
+            }
+          })();
         } else if (window.opener) {
           // Standard browser popup flow
           console.log('Sending success message to opener');
@@ -106,41 +109,44 @@ export default function AuthCallback() {
         }
       } else if (error) {
         if (isTauri) {
-          try {
-            // Try to notify main window about error
-            if ((window as any).__TAURI__?.window) {
-              const { WebviewWindow } = (window as any).__TAURI__.window;
-              const mainWindow = WebviewWindow.getByLabel('main');
-              
-              if (mainWindow) {
-                mainWindow.emit('OAUTH_CALLBACK', { 
-                  type: 'OAUTH_CALLBACK',
-                  error
-                });
-              }
-            }
-            
-            // Close auth window
-            setTimeout(() => {
-              try {
-                if ((window as any).__TAURI__?.window) {
-                  const { getCurrent } = (window as any).__TAURI__.window;
-                  const currentWindow = getCurrent();
-                  if (currentWindow) {
-                    currentWindow.close();
-                  }
+          (async () => {
+            try {
+              // Try to notify main window about error
+              if ((window as any).__TAURI__?.window) {
+                // Dynamically import Tauri API
+                const { WebviewWindow } = (window as any).__TAURI__.window;
+                const mainWindow = WebviewWindow.getByLabel('main');
+                
+                if (mainWindow) {
+                  mainWindow.emit('OAUTH_CALLBACK', { 
+                    type: 'OAUTH_CALLBACK',
+                    error
+                  });
                 }
-              } catch (e) {
-                console.error('Error closing Tauri window:', e);
               }
               
-              // Fallback redirect
+              // Close auth window
+              setTimeout(() => {
+                try {
+                  if ((window as any).__TAURI__?.window) {
+                    const { getCurrent } = (window as any).__TAURI__.window;
+                    const currentWindow = getCurrent();
+                    if (currentWindow) {
+                      currentWindow.close();
+                    }
+                  }
+                } catch (e) {
+                  console.error('Error closing Tauri window:', e);
+                }
+                
+                // Fallback redirect
+                window.location.href = '/auth/signin';
+              }, 1000);
+            } catch (e) {
+              console.error('Error in Tauri auth error handling:', e);
               window.location.href = '/auth/signin';
-            }, 1000);
-          } catch (e) {
-            console.error('Error in Tauri auth error handling:', e);
-            window.location.href = '/auth/signin';
-          }
+            }
+          })();
         } else if (window.opener) {
           console.log('Sending error message to opener:', error);
           window.opener.postMessage({

@@ -4,7 +4,7 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 import { SessionProvider } from 'next-auth/react';
 import { staticSignIn, staticSignOut, getCurrentUser, User } from './api/auth/static-auth';
 
-// Check if we're in a Tauri environment
+// Check if we're in a Tauri environment - safely for SSR
 const isTauri = typeof window !== 'undefined' && 
                 ((window as any).__TAURI__ !== undefined || 
                 (typeof navigator !== 'undefined' && navigator.userAgent.includes('Tauri')));
@@ -38,6 +38,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Init auth state from local storage on first load
   useEffect(() => {
+    // Skip this effect during SSR
+    if (typeof window === 'undefined') {
+      return;
+    }
+    
     try {
       console.log('AuthProvider: Initializing auth state');
       const savedUser = getCurrentUser();

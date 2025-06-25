@@ -1,10 +1,5 @@
 // Static authentication module for Tauri environment
 
-import { open } from '@tauri-apps/api/shell';
-// Import necessary modules for window creation
-import { WebviewWindow } from '@tauri-apps/api/window';
-import { listen } from '@tauri-apps/api/event';
-
 /**
  * Real authentication functions that work with static exports
  * This uses OAuth flow in a Tauri-friendly way
@@ -26,7 +21,7 @@ export interface StaticAuthResponse {
 // Storage key for consistency
 const AUTH_STORAGE_KEY = 'auth_user';
 
-// Detect Tauri environment
+// Detect Tauri environment - safely for SSR
 const isTauri = typeof window !== 'undefined' && 
                ((window as any).__TAURI__ !== undefined || 
                (typeof navigator !== 'undefined' && navigator.userAgent.includes('Tauri')));
@@ -45,6 +40,14 @@ const GOOGLE_USER_INFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
  */
 export async function staticSignIn(provider = 'google'): Promise<StaticAuthResponse> {
   try {
+    // Server-side check - don't proceed with auth flow on server
+    if (typeof window === 'undefined') {
+      return {
+        success: false,
+        error: 'Authentication is only available in browser environment'
+      };
+    }
+
     console.log('Starting authentication with provider:', provider);
     
     if (provider !== 'google') {
@@ -64,13 +67,15 @@ export async function staticSignIn(provider = 'google'): Promise<StaticAuthRespo
 
     // Open the OAuth URL in a window 
     let authWindow: Window | null = null;
-    let tauriAuthWindow: WebviewWindow | null = null;
     
     if (isTauri) {
       console.log('Using Tauri WebviewWindow for authentication');
       try {
+        // Dynamically import Tauri APIs to avoid SSR issues
+        const { WebviewWindow } = await import('@tauri-apps/api/window');
+        
         // Create a new window using Tauri's WebviewWindow API
-        tauriAuthWindow = new WebviewWindow('oauth-window', {
+        const tauriAuthWindow = new WebviewWindow('oauth-window', {
           url: authUrl,
           title: 'Sign in',
           width: 600,
@@ -113,70 +118,79 @@ export async function staticSignIn(provider = 'google'): Promise<StaticAuthRespo
       if (isTauri) {
         console.log('Setting up Tauri event listener');
         
-        // Listen for the OAUTH_CALLBACK event from the auth window
-        listen('OAUTH_CALLBACK', (event) => {
-          console.log('Received Tauri OAUTH_CALLBACK event:', event);
-          
-          const data = event.payload as any;
-          const token = data?.token;
-          const error = data?.error;
-          
-          if (tauriUnlisten) {
-            tauriUnlisten();
+        // Dynamically import and set up Tauri event listener
+        (async () => {
+          try {
+            const { listen } = await import('@tauri-apps/api/event');
+            
+            // Listen for the OAUTH_CALLBACK event from the auth window
+            listen('OAUTH_CALLBACK', (event) => {
+              console.log('Received Tauri OAUTH_CALLBACK event:', event);
+              
+              const data = event.payload as any;
+              const token = data?.token;
+              const error = data?.error;
+              
+              if (tauriUnlisten) {
+                tauriUnlisten();
+              }
+              
+              if (error || !token) {
+                console.error('Authentication error via Tauri event:', error);
+                resolve({
+                  success: false,
+                  error: error || 'Authentication failed'
+                });
+                return;
+              }
+              
+              // Process user info as before
+              console.log('Token received via Tauri event, fetching user info');
+              
+              fetch(GOOGLE_USER_INFO_URL, {
+                headers: {
+                  'Authorization': `Bearer ${token}`
+                }
+              })
+              .then(response => {
+                if (!response.ok) {
+                  throw new Error(`User info request failed: ${response.status}`);
+                }
+                return response.json();
+              })
+              .then(userInfo => {
+                console.log('User info received:', userInfo.email);
+                
+                const user: User = {
+                  id: userInfo.sub,
+                  name: userInfo.name,
+                  email: userInfo.email,
+                  image: userInfo.picture
+                };
+                
+                localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+                
+                resolve({
+                  success: true,
+                  user
+                });
+              })
+              .catch(error => {
+                console.error('Error fetching user info:', error);
+                resolve({
+                  success: false,
+                  error: error.message
+                });
+              });
+            }).then(unlisten => {
+              tauriUnlisten = unlisten;
+            }).catch(err => {
+              console.error('Error setting up Tauri event listener:', err);
+            });
+          } catch (err) {
+            console.error('Failed to import Tauri listen API:', err);
           }
-          
-          if (error || !token) {
-            console.error('Authentication error via Tauri event:', error);
-            resolve({
-              success: false,
-              error: error || 'Authentication failed'
-            });
-            return;
-          }
-          
-          // Process user info as before
-          console.log('Token received via Tauri event, fetching user info');
-          
-          fetch(GOOGLE_USER_INFO_URL, {
-            headers: {
-              'Authorization': `Bearer ${token}`
-            }
-          })
-          .then(response => {
-            if (!response.ok) {
-              throw new Error(`User info request failed: ${response.status}`);
-            }
-            return response.json();
-          })
-          .then(userInfo => {
-            console.log('User info received:', userInfo.email);
-            
-            const user: User = {
-              id: userInfo.sub,
-              name: userInfo.name,
-              email: userInfo.email,
-              image: userInfo.picture
-            };
-            
-            localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
-            
-            resolve({
-              success: true,
-              user
-            });
-          })
-          .catch(error => {
-            console.error('Error fetching user info:', error);
-            resolve({
-              success: false,
-              error: error.message
-            });
-          });
-        }).then(unlisten => {
-          tauriUnlisten = unlisten;
-        }).catch(err => {
-          console.error('Error setting up Tauri event listener:', err);
-        });
+        })();
       }
       
       // Standard browser message listener 
@@ -298,6 +312,14 @@ export async function staticSignIn(provider = 'google'): Promise<StaticAuthRespo
 
 export async function staticSignOut(): Promise<StaticAuthResponse> {
   try {
+    // Server-side check
+    if (typeof window === 'undefined') {
+      return {
+        success: false,
+        error: 'Sign out is only available in browser environment'
+      };
+    }
+    
     // Clear all auth-related items from storage
     localStorage.removeItem(AUTH_STORAGE_KEY);
     localStorage.removeItem('oauth_state');
@@ -332,6 +354,7 @@ export async function staticSignOut(): Promise<StaticAuthResponse> {
 }
 
 export function getCurrentUser(): User | null {
+  // Server-side check
   if (typeof window === 'undefined') return null;
   
   try {

@@ -2,10 +2,9 @@
 
 PermaVid is a local video archiving tool that helps you download, manage, and archive videos from various sources.
 
-<img src="https://wakapi-qt1b.onrender.com/api/badge/fahad/interval:any/
-project:PermaVid" 
+<img src="https://wakapi-qt1b.onrender.com/api/badge/fahad/interval:any/project:permavid" 
      alt="Wakapi Time Tracking" 
-     title="Minimum amount of time spent on this project">
+     title="Spent more than that amount of time spent on this project">
 
 ## 🚀 Quick Start (Tauri App)
 

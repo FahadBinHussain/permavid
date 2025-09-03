@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from "@tauri-apps/api/tauri";
 
 // Type definitions
 export interface QueueItem {
@@ -8,7 +8,6 @@ export interface QueueItem {
   message?: string;
   title?: string;
   filemoon_url?: string;
-  files_vc_url?: string;
   encoding_progress?: number;
   thumbnail_url?: string;
   added_at?: number;
@@ -20,7 +19,6 @@ export interface QueueItem {
 
 export interface AppSettings {
   filemoon_api_key?: string;
-  files_vc_api_key?: string;
   download_directory?: string;
   delete_after_upload?: string;
   auto_upload?: string;
@@ -37,60 +35,74 @@ interface UploadResponse {
 // Queue related functions
 export async function getQueueItems() {
   try {
-    const response = await invoke('get_queue_items');
-    if (typeof response === 'object' && response !== null && 'data' in response) {
+    const response = await invoke("get_queue_items");
+    if (
+      typeof response === "object" &&
+      response !== null &&
+      "data" in response
+    ) {
       return (response as any).data || [];
     }
     return [];
   } catch (error) {
-    console.error('Error fetching queue from Tauri:', error);
+    console.error("Error fetching queue from Tauri:", error);
     return [];
   }
 }
 
 export async function addQueueItem(item: QueueItem) {
   try {
-    const id: string = await invoke('add_queue_item', { item });
+    const id: string = await invoke("add_queue_item", { item });
     return id;
   } catch (err: any) {
     // Convert error to string for checking
     const errorString = String(err);
     // Check if it's one of the expected duplicate/archived errors
-    if (errorString.includes("already exists in the active queue") || errorString.includes("has already been archived")) {
+    if (
+      errorString.includes("already exists in the active queue") ||
+      errorString.includes("has already been archived")
+    ) {
       // Re-throw only the message string for graceful handling in UI
-      throw errorString; 
+      throw errorString;
     } else {
       // Re-throw other unexpected errors and log them
-      console.error("Unexpected error adding queue item via Tauri:", err); 
-      throw err; 
+      console.error("Unexpected error adding queue item via Tauri:", err);
+      throw err;
     }
   }
 }
 
 export async function updateQueueItem(item: QueueItem) {
   try {
-    await invoke('update_queue_item', { item });
+    await invoke("update_queue_item", { item });
   } catch (error) {
-    console.error('Error updating queue item via Tauri:', error);
+    console.error("Error updating queue item via Tauri:", error);
     throw error;
   }
 }
 
-export async function updateItemStatus(id: string, status: string, message?: string) {
+export async function updateItemStatus(
+  id: string,
+  status: string,
+  message?: string,
+) {
   try {
-    await invoke('update_item_status', { id, status, message });
+    await invoke("update_item_status", { id, status, message });
   } catch (error) {
-    console.error('Error updating item status via Tauri:', error);
+    console.error("Error updating item status via Tauri:", error);
     throw error;
   }
 }
 
 export async function clearCompletedItems(statusTypes: string[]) {
   try {
-    console.log('[Tauri API] Calling clear_completed_items with direct array:', JSON.stringify(statusTypes));
-    await invoke('clear_completed_items', { statusTypes });
+    console.log(
+      "[Tauri API] Calling clear_completed_items with direct array:",
+      JSON.stringify(statusTypes),
+    );
+    await invoke("clear_completed_items", { statusTypes });
   } catch (error) {
-    console.error('Error clearing completed items via Tauri:', error);
+    console.error("Error clearing completed items via Tauri:", error);
     throw error;
   }
 }
@@ -98,22 +110,26 @@ export async function clearCompletedItems(statusTypes: string[]) {
 // Settings related functions
 export async function getSettings() {
   try {
-    const response = await invoke('get_settings');
-    
+    const response = await invoke("get_settings");
+
     // Add debug logging
-    console.log('Settings response:', response);
-    
-    if (typeof response === 'object' && response !== null && 'data' in response) {
+    console.log("Settings response:", response);
+
+    if (
+      typeof response === "object" &&
+      response !== null &&
+      "data" in response
+    ) {
       // Ensure we're returning a valid object, even if data is null or undefined
       return (response as any).data || {};
     }
-    
-    console.warn('Unexpected response format from get_settings:', response);
+
+    console.warn("Unexpected response format from get_settings:", response);
     return {};
   } catch (error) {
     // More detailed error logging
-    console.error('Error fetching settings from Tauri:', error);
-    
+    console.error("Error fetching settings from Tauri:", error);
+
     // Return an empty object instead of throwing
     return {};
   }
@@ -121,9 +137,9 @@ export async function getSettings() {
 
 export async function saveSettings(settings: AppSettings) {
   try {
-    await invoke('save_settings', { settings });
+    await invoke("save_settings", { settings });
   } catch (error) {
-    console.error('Error saving settings via Tauri:', error);
+    console.error("Error saving settings via Tauri:", error);
     throw error;
   }
 }
@@ -131,13 +147,17 @@ export async function saveSettings(settings: AppSettings) {
 // Utility functions
 export async function getDownloadDirectory() {
   try {
-    const response = await invoke('get_download_directory');
-    if (typeof response === 'object' && response !== null && 'data' in response) {
+    const response = await invoke("get_download_directory");
+    if (
+      typeof response === "object" &&
+      response !== null &&
+      "data" in response
+    ) {
       return (response as any).data || "";
     }
     return "";
   } catch (error) {
-    console.error('Error getting download directory via Tauri:', error);
+    console.error("Error getting download directory via Tauri:", error);
     return "";
   }
 }
@@ -145,9 +165,9 @@ export async function getDownloadDirectory() {
 // Function to open external links
 export async function openExternalLink(url: string) {
   try {
-    await invoke('open_external_link', { url });
+    await invoke("open_external_link", { url });
   } catch (error) {
-    console.error('Error opening external link:', error);
+    console.error("Error opening external link:", error);
     throw error;
   }
 }
@@ -160,9 +180,9 @@ export function isTauri() {
 // Function to manually import data from a specific file
 export async function importFromFile(path: string) {
   try {
-    await invoke('import_from_file', { path });
+    await invoke("import_from_file", { path });
   } catch (error) {
-    console.error('Error importing from file:', error);
+    console.error("Error importing from file:", error);
     throw error;
   }
 }
@@ -171,9 +191,9 @@ export async function importFromFile(path: string) {
 export async function retryItem(id: string): Promise<string> {
   try {
     // Result should be { success: boolean, message: string, data: null }
-    const response: any = await invoke('retry_item', { id }); 
+    const response: any = await invoke("retry_item", { id });
     if (!response || !response.success) {
-      return response?.message || 'Failed to retry item in backend.';
+      return response?.message || "Failed to retry item in backend.";
     }
     // Return the success message
     return response.message;
@@ -181,7 +201,7 @@ export async function retryItem(id: string): Promise<string> {
     // Don't log API key configuration errors to console
     const errorMessage = error instanceof Error ? error.message : String(error);
     if (!errorMessage.includes("API key not configured")) {
-      console.error('Error retrying item via Tauri:', error);
+      console.error("Error retrying item via Tauri:", error);
     }
     // Return the error message as a string instead of throwing
     return errorMessage;
@@ -189,20 +209,20 @@ export async function retryItem(id: string): Promise<string> {
 }
 // --- END ADDED ---
 
-// --- ADDED: Function to trigger upload via Tauri --- 
+// --- ADDED: Function to trigger upload via Tauri ---
 export async function triggerUpload(id: string): Promise<UploadResponse> {
   try {
     // Result should match the Response<String> structure from Rust
-    const response: UploadResponse = await invoke('trigger_upload', { id }); 
+    const response: UploadResponse = await invoke("trigger_upload", { id });
     // No need to check success here, let the caller handle the full response
     return response;
   } catch (error) {
     // Don't log API key configuration errors to console - they're expected and handled in the UI
     const errorMessage = error instanceof Error ? error.message : String(error);
     if (!errorMessage.includes("API key not configured")) {
-      console.error('Error triggering upload via Tauri:', error);
+      console.error("Error triggering upload via Tauri:", error);
     }
-    
+
     // Ensure a consistent error response structure
     return {
       success: false,
@@ -210,68 +230,96 @@ export async function triggerUpload(id: string): Promise<UploadResponse> {
     };
   }
 }
-// --- END ADDED --- 
+// --- END ADDED ---
 
 // --- ADDED: Function to cancel an item via Tauri ---
-export async function cancelItem(id: string): Promise<{success: boolean, message: string}> {
+export async function cancelItem(
+  id: string,
+): Promise<{ success: boolean; message: string }> {
   try {
     // Response structure matches Rust Response<()> which becomes { success, message, data: null }
-    const response: any = await invoke('cancel_item', { id });
+    const response: any = await invoke("cancel_item", { id });
     if (!response || !response.success) {
-      throw new Error(response?.message || 'Failed to cancel item in backend.');
+      throw new Error(response?.message || "Failed to cancel item in backend.");
     }
     return { success: true, message: response.message };
   } catch (error) {
-    console.error('Error cancelling item via Tauri:', error);
-    return { 
-        success: false, 
-        message: error instanceof Error ? error.message : 'Unknown error cancelling item' 
+    console.error("Error cancelling item via Tauri:", error);
+    return {
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unknown error cancelling item",
     };
   }
 }
-// --- END ADDED --- 
+// --- END ADDED ---
 
 // --- ADDED: Function to restart encoding via Tauri ---
-export async function restartEncoding(id: string): Promise<{success: boolean, message: string}> {
+export async function restartEncoding(
+  id: string,
+): Promise<{ success: boolean; message: string }> {
   try {
     // Response structure matches Rust Response<()> which becomes { success, message, data: null }
-    const response: any = await invoke('restart_encoding', { id });
+    const response: any = await invoke("restart_encoding", { id });
     if (!response || !response.success) {
-      throw new Error(response?.message || 'Failed to restart encoding in backend.');
+      throw new Error(
+        response?.message || "Failed to restart encoding in backend.",
+      );
     }
     return { success: true, message: response.message };
   } catch (error) {
-    console.error('Error restarting encoding via Tauri:', error);
-    return { 
-        success: false, 
-        message: error instanceof Error ? error.message : 'Unknown error restarting encoding' 
+    console.error("Error restarting encoding via Tauri:", error);
+    return {
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unknown error restarting encoding",
     };
   }
 }
-// --- END ADDED --- 
+// --- END ADDED ---
 
 // --- ADDED: Function to get gallery items via Tauri ---
-export async function getGalleryItems(): Promise<{success: boolean, message: string, data?: QueueItem[]}> {
+export async function getGalleryItems(): Promise<{
+  success: boolean;
+  message: string;
+  data?: QueueItem[];
+}> {
   try {
     console.log("[Tauri API] Calling invoke('get_gallery_items')...");
     // Response structure matches Rust Response<Vec<QueueItem>>
-    const response: any = await invoke('get_gallery_items');
-    
-    console.log("[Tauri API] Raw response from get_gallery_items:", JSON.stringify(response, null, 2));
+    const response: any = await invoke("get_gallery_items");
+
+    console.log(
+      "[Tauri API] Raw response from get_gallery_items:",
+      JSON.stringify(response, null, 2),
+    );
 
     if (!response || !response.success) {
-      console.warn("[Tauri API] get_gallery_items response check failed. Response:", response);
-      throw new Error(response?.message || 'Failed to get gallery items from backend.');
+      console.warn(
+        "[Tauri API] get_gallery_items response check failed. Response:",
+        response,
+      );
+      throw new Error(
+        response?.message || "Failed to get gallery items from backend.",
+      );
     }
     console.log("[Tauri API] get_gallery_items successful. Returning data.");
-    return { success: true, message: response.message, data: response.data || [] };
+    return {
+      success: true,
+      message: response.message,
+      data: response.data || [],
+    };
   } catch (error) {
-    console.error('[Tauri API] Error in getGalleryItems catch block:', error);
-    return { 
-        success: false, 
-        message: `Error fetching gallery items: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        data: []
+    console.error("[Tauri API] Error in getGalleryItems catch block:", error);
+    return {
+      success: false,
+      message: `Error fetching gallery items: ${error instanceof Error ? error.message : "Unknown error"}`,
+      data: [],
     };
   }
 }
-// --- END ADDED --- 
+// --- END ADDED ---

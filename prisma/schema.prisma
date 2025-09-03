@@ -33,7 +33,7 @@ model QueueItem {
   localPath       String?  @map("local_path")
   infoJsonPath    String?  @map("info_json_path")
   filemoonUrl     String?  @map("filemoon_url")
-  filesVcUrl      String?  @map("files_vc_url")
+
   encodingProgress Int?     @map("encoding_progress")
   addedAt         BigInt   @map("added_at")
   updatedAt       BigInt   @map("updated_at")
@@ -50,4 +50,4 @@ model Setting {
   user    User?   @relation(fields: [userId], references: [id])
 
   @@map("settings")
-} 
+}

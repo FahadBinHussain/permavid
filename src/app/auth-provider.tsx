@@ -1,142 +1,150 @@
-'use client';
+"use client";
 
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { SessionProvider } from 'next-auth/react';
-import { staticSignIn, staticSignOut, getCurrentUser, User } from './api/auth/static-auth';
+import { GoogleOAuthProvider, useGoogleLogin } from "@react-oauth/google";
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  ReactNode,
+} from "react";
 
-// Check if we're in a Tauri environment - safely for SSR
-const isTauri = typeof window !== 'undefined' && 
-                ((window as any).__TAURI__ !== undefined || 
-                (typeof navigator !== 'undefined' && navigator.userAgent.includes('Tauri')));
-
-// Create a context for our custom auth state
+// Auth context interface
 interface AuthContextType {
-  user: User | null;
-  status: 'loading' | 'authenticated' | 'unauthenticated';
+  user: any | null;
+  status: "loading" | "authenticated" | "unauthenticated";
   error: string | null;
-  signIn: (provider?: string) => Promise<void>;
-  signOut: () => Promise<void>;
+  signIn: () => void;
+  signOut: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
-  status: 'loading',
+  status: "loading",
   error: null,
-  signIn: async () => {},
-  signOut: async () => {},
+  signIn: () => {},
+  signOut: () => {},
 });
 
 export function useAuth() {
   return useContext(AuthContext);
 }
 
-// This provider will manage auth state and provide it to children
+// Google OAuth provider wrapper
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [status, setStatus] = useState<'loading' | 'authenticated' | 'unauthenticated'>('loading');
+  const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
+
+  return (
+    <GoogleOAuthProvider clientId={googleClientId}>
+      <AuthContextProvider>{children}</AuthContextProvider>
+    </GoogleOAuthProvider>
+  );
+}
+
+// Internal auth context provider
+function AuthContextProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<any | null>(null);
+  const [status, setStatus] = useState<
+    "loading" | "authenticated" | "unauthenticated"
+  >("loading");
   const [error, setError] = useState<string | null>(null);
 
-  // Init auth state from local storage on first load
+  // Initialize auth state from localStorage
   useEffect(() => {
-    // Skip this effect during SSR
-    if (typeof window === 'undefined') {
-      return;
-    }
-    
-    try {
-      console.log('AuthProvider: Initializing auth state');
-      const savedUser = getCurrentUser();
-      if (savedUser) {
-        console.log('AuthProvider: Found saved user', savedUser.email);
-        setUser(savedUser);
-        setStatus('authenticated');
-      } else {
-        console.log('AuthProvider: No saved user found');
-        setStatus('unauthenticated');
+    const savedUser = localStorage.getItem("auth_user");
+    if (savedUser) {
+      try {
+        const userData = JSON.parse(savedUser);
+        setUser(userData);
+        setStatus("authenticated");
+      } catch (e) {
+        localStorage.removeItem("auth_user");
+        setStatus("unauthenticated");
       }
-    } catch (e) {
-      console.error('Error loading auth from storage:', e);
-      setStatus('unauthenticated');
-      setError('Failed to load authentication state');
+    } else {
+      setStatus("unauthenticated");
     }
   }, []);
 
-  // Custom sign-in function that works with static exports
-  const handleSignIn = async (provider = 'google') => {
-    try {
-      console.log(`AuthProvider: Starting sign-in with ${provider}`);
-      setStatus('loading');
-      setError(null);
-      
-      const result = await staticSignIn(provider);
-      console.log('AuthProvider: Sign-in result', { success: result.success, hasUser: !!result.user });
-      
-      if (result.success && result.user) {
-        setUser(result.user);
-        setStatus('authenticated');
-      } else {
-        throw new Error(result.error || 'Sign in failed');
+  const googleLogin = useGoogleLogin({
+    onSuccess: async (tokenResponse) => {
+      try {
+        // Get user info from Google
+        const userInfoResponse = await fetch(
+          "https://www.googleapis.com/oauth2/v3/userinfo",
+          {
+            headers: {
+              Authorization: `Bearer ${tokenResponse.access_token}`,
+            },
+          },
+        );
+
+        if (!userInfoResponse.ok) {
+          throw new Error("Failed to get user info");
+        }
+
+        const userInfo = await userInfoResponse.json();
+
+        const userData = {
+          id: userInfo.sub,
+          name: userInfo.name,
+          email: userInfo.email,
+          image: userInfo.picture,
+        };
+
+        // Save user to database
+        try {
+          const response = await fetch("/api/users", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(userData),
+          });
+
+          if (response.ok) {
+            console.log("User saved to database successfully");
+          }
+        } catch (dbError) {
+          console.error("Error saving user to database:", dbError);
+        }
+
+        // Save to localStorage and state
+        localStorage.setItem("auth_user", JSON.stringify(userData));
+        setUser(userData);
+        setStatus("authenticated");
+        setError(null);
+      } catch (error) {
+        console.error("Login error:", error);
+        setError(error instanceof Error ? error.message : "Login failed");
+        setStatus("unauthenticated");
       }
-    } catch (error) {
-      console.error('AuthProvider: Sign-in error:', error);
-      setStatus('unauthenticated');
-      setError(error instanceof Error ? error.message : 'Authentication failed');
-      
-      // Display a message to the user
-      if (typeof window !== 'undefined') {
-        alert(`Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`);
-      }
-    }
+    },
+    onError: (error) => {
+      console.error("Google login error:", error);
+      setError("Google login failed");
+      setStatus("unauthenticated");
+    },
+  });
+
+  const handleSignOut = () => {
+    localStorage.removeItem("auth_user");
+    setUser(null);
+    setStatus("unauthenticated");
+    setError(null);
   };
 
-  // Custom sign-out function
-  const handleSignOut = async () => {
-    try {
-      console.log('AuthProvider: Starting sign-out');
-      // First update the state
-      setStatus('loading'); // Prevent immediate redirects
-      
-      // Clean up localStorage
-      const result = await staticSignOut();
-      console.log('AuthProvider: Sign-out result', result);
-      
-      // Give the browser a small delay to process localStorage changes
-      // This helps prevent race conditions with the AuthGuard component
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Finally update React state
-      setUser(null);
-      setStatus('unauthenticated');
-      setError(null);
-      
-      // Force a full page refresh to clear any lingering state
-      if (typeof window !== 'undefined') {
-        window.location.href = '/auth/signin';
-      }
-    } catch (error) {
-      console.error('AuthProvider: Sign-out error:', error);
-      // Reset to unauthenticated state even on error
-      setUser(null);
-      setStatus('unauthenticated');
-      setError('Failed to sign out properly');
-    }
-  };
-
-  // Provide auth state to all children
   return (
-    <AuthContext.Provider value={{ 
-      user, 
-      status, 
-      error,
-      signIn: handleSignIn,
-      signOut: handleSignOut
-    }}>
-      {/* If not in Tauri, also provide NextAuth's SessionProvider for web mode */}
-      {!isTauri ? (
-        <SessionProvider>{children}</SessionProvider>
-      ) : (
-        children
-      )}
+    <AuthContext.Provider
+      value={{
+        user,
+        status,
+        error,
+        signIn: googleLogin,
+        signOut: handleSignOut,
+      }}
+    >
+      {children}
     </AuthContext.Provider>
   );
-} 
+}

@@ -4,24 +4,24 @@ import { prisma } from "@/lib/db";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { id, name, email, image } = body;
+    const { googleId, name, email, image } = body;
 
-    if (!id || !email) {
+    if (!email) {
       return NextResponse.json(
-        { error: "User ID and email are required" },
+        { error: "Email is required" },
         { status: 400 },
       );
     }
 
-    // Check if user already exists
+    // Check if user already exists by email
     const existingUser = await prisma.user.findUnique({
-      where: { id },
+      where: { email },
     });
 
     if (existingUser) {
       // Update existing user's last login
       const updatedUser = await prisma.user.update({
-        where: { id },
+        where: { email },
         data: {
           displayName: name || existingUser.displayName,
           lastLogin: new Date(),
@@ -35,10 +35,9 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Create new user
+    // Create new user with auto-generated UUID
     const newUser = await prisma.user.create({
       data: {
-        id,
         username: email, // Use email as username for Google auth users
         email,
         displayName: name,

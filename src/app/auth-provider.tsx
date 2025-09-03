@@ -85,28 +85,39 @@ function AuthContextProvider({ children }: { children: ReactNode }) {
 
         const userInfo = await userInfoResponse.json();
 
-        const userData = {
-          id: userInfo.sub,
-          name: userInfo.name,
-          email: userInfo.email,
-          image: userInfo.picture,
-        };
-
-        // Save user to database
+        // Save user to database first
+        let userData;
         try {
           const response = await fetch("/api/users", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
             },
-            body: JSON.stringify(userData),
+            body: JSON.stringify({
+              googleId: userInfo.sub,
+              name: userInfo.name,
+              email: userInfo.email,
+              image: userInfo.picture,
+            }),
           });
 
-          if (response.ok) {
-            console.log("User saved to database successfully");
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || "Failed to save user to database");
           }
+
+          const result = await response.json();
+          userData = {
+            id: result.user.id,
+            name: result.user.displayName || userInfo.name,
+            email: result.user.email,
+            image: userInfo.picture,
+          };
+
+          console.log("User saved to database successfully");
         } catch (dbError) {
           console.error("Error saving user to database:", dbError);
+          throw new Error("Failed to save user to database: " + (dbError instanceof Error ? dbError.message : "Unknown error"));
         }
 
         // Save to localStorage and state

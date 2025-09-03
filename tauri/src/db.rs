@@ -8,6 +8,7 @@ use dotenv::dotenv;
 use native_tls::TlsConnector as NativeTlsConnector;
 use postgres_native_tls::MakeTlsConnector;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::env;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -342,7 +343,7 @@ impl Database {
         Ok(items)
     }
 
-    pub async fn get_settings(&self) -> Result<AppSettings> {
+    pub async fn get_settings(&self, user_id: &str) -> Result<AppSettings> {
         let client = self.get_client().await?;
 
         let mut app_settings = AppSettings::default();
@@ -350,8 +351,8 @@ impl Database {
         // Query for settings via Prisma's table
         let rows = client
             .query(
-                "SELECT key, value FROM settings WHERE user_id = 'local-user'",
-                &[],
+                "SELECT key, value FROM settings WHERE user_id = $1",
+                &[&user_id],
             )
             .await?;
 
@@ -405,86 +406,36 @@ impl Database {
         Ok(app_settings)
     }
 
-    pub async fn save_settings(&self, settings: &AppSettings) -> Result<()> {
+    pub async fn save_settings(&self, settings: &AppSettings, user_id: &str) -> Result<()> {
         let mut client = self.get_client().await?;
 
         // Create JSON representation for all settings
-        let settings_json = serde_json::json!({
+        let settings_json = json!({
             "filemoon_api_key": settings.filemoon_api_key,
             "download_directory": settings.download_directory,
             "delete_after_upload": settings.delete_after_upload,
             "auto_upload": settings.auto_upload,
-            "upload_target": settings.upload_target,
+            "upload_target": settings.upload_target
         });
 
-        // Use a transaction for consistent updates
+        // Use a transaction to ensure atomic operations
         let tx = client.transaction().await?;
 
-        // Update user_settings JSON blob in settings table
+        // Clean up any old individual setting rows for this user
+        tx.execute(
+            "DELETE FROM settings WHERE user_id = $1 AND key IN ('filemoon_api_key', 'download_directory', 'delete_after_upload', 'auto_upload', 'upload_target')",
+            &[&user_id],
+        ).await?;
+
+        // Save only the JSON blob - no need for individual settings
         tx.execute(
             "INSERT INTO settings (key, value, user_id)
              VALUES ($1, $2, $3)
-             ON CONFLICT (key)
-             DO UPDATE SET value = $2",
-            &[&"user_settings", &settings_json.to_string(), &"local-user"],
+             ON CONFLICT (key, user_id)
+             DO UPDATE SET value = EXCLUDED.value",
+            &[&"user_settings", &settings_json.to_string(), &user_id],
         )
         .await?;
-
-        // Individual settings might also be stored separately
-        if let Some(value) = &settings.filemoon_api_key {
-            tx.execute(
-                "INSERT INTO settings (key, value, user_id)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (key)
-                 DO UPDATE SET value = $2",
-                &[&"filemoon_api_key", value, &"local-user"],
-            )
-            .await?;
-        }
-
-        if let Some(value) = &settings.download_directory {
-            tx.execute(
-                "INSERT INTO settings (key, value, user_id)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (key)
-                 DO UPDATE SET value = $2",
-                &[&"download_directory", value, &"local-user"],
-            )
-            .await?;
-        }
-
-        if let Some(value) = &settings.delete_after_upload {
-            tx.execute(
-                "INSERT INTO settings (key, value, user_id)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (key)
-                 DO UPDATE SET value = $2",
-                &[&"delete_after_upload", value, &"local-user"],
-            )
-            .await?;
-        }
-
-        if let Some(value) = &settings.auto_upload {
-            tx.execute(
-                "INSERT INTO settings (key, value, user_id)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (key)
-                 DO UPDATE SET value = $2",
-                &[&"auto_upload", value, &"local-user"],
-            )
-            .await?;
-        }
-
-        if let Some(value) = &settings.upload_target {
-            tx.execute(
-                "INSERT INTO settings (key, value, user_id)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (key)
-                 DO UPDATE SET value = $2",
-                &[&"upload_target", value, &"local-user"],
-            )
-            .await?;
-        }
 
         tx.commit().await?;
 

@@ -108,9 +108,11 @@ export async function clearCompletedItems(statusTypes: string[]) {
 }
 
 // Settings related functions
-export async function getSettings() {
+export async function getSettings(userId?: string) {
   try {
-    const response = await invoke("get_settings");
+    const response = await invoke("get_settings", {
+      userId: userId || "local-user",
+    });
 
     // Add debug logging
     console.log("Settings response:", response);
@@ -135,9 +137,12 @@ export async function getSettings() {
   }
 }
 
-export async function saveSettings(settings: AppSettings) {
+export async function saveSettings(settings: AppSettings, userId?: string) {
   try {
-    await invoke("save_settings", { settings });
+    await invoke("save_settings", {
+      settings,
+      userId: userId || "local-user",
+    });
   } catch (error) {
     console.error("Error saving settings via Tauri:", error);
     throw error;

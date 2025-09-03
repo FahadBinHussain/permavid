@@ -228,8 +228,11 @@ async fn clear_completed_items(
 }
 
 #[tauri::command]
-async fn get_settings(app_state: State<'_, AppState>) -> Result<Response<AppSettings>, String> {
-    match app_state.db.get_settings().await {
+async fn get_settings(
+    userId: String,
+    app_state: State<'_, AppState>,
+) -> Result<Response<AppSettings>, String> {
+    match app_state.db.get_settings(&userId).await {
         Ok(settings) => Ok(Response {
             success: true,
             message: "Settings retrieved successfully".to_string(),
@@ -255,9 +258,10 @@ async fn get_settings(app_state: State<'_, AppState>) -> Result<Response<AppSett
 #[tauri::command]
 async fn save_settings(
     settings: AppSettings,
+    userId: String,
     app_state: State<'_, AppState>,
 ) -> Result<Response<()>, String> {
-    match app_state.db.save_settings(&settings).await {
+    match app_state.db.save_settings(&settings, &userId).await {
         Ok(_) => Ok(Response {
             success: true,
             message: "Settings saved successfully".to_string(),
@@ -480,7 +484,7 @@ async fn restart_encoding(
         }
     };
 
-    let settings = match app_state.db.get_settings().await {
+    let settings = match app_state.db.get_settings("local-user").await {
         Ok(s) => s,
         Err(e) => return Err(format!("Failed to get settings for restart: {}", e)),
     };
@@ -621,7 +625,7 @@ async fn trigger_upload(
         Err(e) => return Err(format!("Database error retrieving item: {}", e)),
     };
 
-    settings_clone = match app_state.db.get_settings().await {
+    settings_clone = match app_state.db.get_settings("local-user").await {
         Ok(settings) => settings,
         Err(e) => return Err(format!("Failed to retrieve settings: {}", e)),
     };
@@ -1278,7 +1282,7 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
 
             // Get settings and mark as downloading
             let app_state: State<'_, AppState> = app_handle.state();
-            let settings = match app_state.db.get_settings().await {
+            let settings = match app_state.db.get_settings("local-user").await {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Error getting settings for item {}: {}", item_id, e);
@@ -1762,7 +1766,7 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                     }
 
                     // Check for auto-upload
-                    let settings_after = match app_state.db.get_settings().await {
+                    let settings_after = match app_state.db.get_settings("local-user").await {
                         Ok(s) => s,
                         Err(_) => AppSettings::default(),
                     };

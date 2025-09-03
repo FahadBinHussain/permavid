@@ -44,10 +44,11 @@ model QueueItem {
 }
 
 model Setting {
-  key     String  @id
+  key     String
   value   String?
-  userId  String? @map("user_id")
+  userId  String  @map("user_id")
   user    User?   @relation(fields: [userId], references: [id])
 
+  @@id([key, userId])
   @@map("settings")
 }

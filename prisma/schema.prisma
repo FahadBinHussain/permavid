@@ -1,5 +1,4 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// Prisma schema
 
 generator client {
   provider = "prisma-client-js"
@@ -11,12 +10,12 @@ datasource db {
 }
 
 model User {
-  id          String    @id @default(uuid())
-  username    String    @unique
-  email       String?   @unique
-  displayName String?   @map("display_name")
-  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  lastLogin   DateTime? @map("last_login") @db.Timestamptz
+  id          String      @id @default(uuid())
+  username    String      @unique
+  email       String?     @unique
+  displayName String?     @map("display_name")
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  lastLogin   DateTime?   @map("last_login") @db.Timestamptz
   queueItems  QueueItem[]
   settings    Setting[]
 
@@ -24,30 +23,31 @@ model User {
 }
 
 model QueueItem {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   url             String
   title           String?
-  thumbnailUrl    String?  @map("thumbnail_url")
-  status          String   @default("queued")
+  thumbnailUrl    String?   @map("thumbnail_url")
+  status          String    @default("queued")
   message         String?
-  localPath       String?  @map("local_path")
-  infoJsonPath    String?  @map("info_json_path")
-  filemoonUrl     String?  @map("filemoon_url")
+  localPath       String?   @map("local_path")
+  infoJsonPath    String?   @map("info_json_path")
+  filemoonUrl     String?   @map("filemoon_url")
 
-  encodingProgress Int?     @map("encoding_progress")
-  addedAt         BigInt   @map("added_at")
-  updatedAt       BigInt   @map("updated_at")
-  userId          String?  @map("user_id")
-  user            User?    @relation(fields: [userId], references: [id])
+  encodingProgress Int?      @map("encoding_progress")
+  addedAt         DateTime   @default(now()) @map("added_at") @db.Timestamptz
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz
+  userId          String     @map("user_id")
+  user            User       @relation(fields: [userId], references: [id])
 
   @@map("queue")
+  @@index([status])
 }
 
 model Setting {
   key     String
   value   String?
-  userId  String  @map("user_id")
-  user    User?   @relation(fields: [userId], references: [id])
+  userId  String   @map("user_id")
+  user    User     @relation(fields: [userId], references: [id])
 
   @@id([key, userId])
   @@map("settings")

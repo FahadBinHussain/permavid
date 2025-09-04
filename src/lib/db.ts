@@ -73,21 +73,28 @@ async function getCurrentUserId(): Promise<string> {
     } catch (error) {
       console.error("Error getting user from localStorage:", error);
     }
+    // Return fallback user ID for browser environment without touching Prisma
+    return "local-user";
   }
 
-  // Fallback: try to find or create local user
-  const localUser = await prisma.user.upsert({
-    where: { username: "local" },
-    update: {},
-    create: {
-      id: "local-user",
-      username: "local",
-      email: "local@permavid.app",
-      displayName: "Local User",
-    },
-  });
+  // Server-side only: try to find or create local user
+  try {
+    const localUser = await prisma.user.upsert({
+      where: { username: "local" },
+      update: {},
+      create: {
+        id: "local-user",
+        username: "local",
+        email: "local@permavid.app",
+        displayName: "Local User",
+      },
+    });
 
-  return localUser.id;
+    return localUser.id;
+  } catch (error) {
+    console.error("Error accessing database for user ID:", error);
+    return "local-user";
+  }
 }
 
 // Export the prisma client and utility functions

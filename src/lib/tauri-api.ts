@@ -340,3 +340,35 @@ export async function getGalleryItems(): Promise<{
   }
 }
 // --- END ADDED ---
+
+// --- ADDED: Debug function to check Filemoon status ---
+export async function debugCheckStatus(
+  filecode: string,
+  apiKey: string,
+): Promise<{ success: boolean; message: string; data?: string }> {
+  try {
+    console.log("[Tauri API] Calling debug_check_status...");
+    const response: any = await invoke("debug_check_status", {
+      filecode,
+      api_key: apiKey,
+    });
+
+    console.log(
+      "[Tauri API] Debug check status response:",
+      JSON.stringify(response, null, 2),
+    );
+
+    return {
+      success: response.success,
+      message: response.message,
+      data: response.data,
+    };
+  } catch (error) {
+    console.error("[Tauri API] Error in debugCheckStatus:", error);
+    return {
+      success: false,
+      message: `Error checking status: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
+// --- END ADDED ---

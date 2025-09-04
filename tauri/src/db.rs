@@ -586,9 +586,9 @@ impl Database {
 
         let rows = client
             .query(
-                "SELECT q.id, q.filemoon_url, s.value
+                "SELECT q.id, q.filemoon_url, s.value, q.user_id
              FROM queue q
-             JOIN settings s ON s.key = 'filemoon_api_key'
+             JOIN settings s ON s.key = 'user_settings' AND s.user_id = q.user_id
              WHERE q.status IN ('transferring', 'encoding') AND q.filemoon_url IS NOT NULL",
                 &[],
             )
@@ -596,11 +596,27 @@ impl Database {
 
         let mut items = Vec::with_capacity(rows.len());
         for row in rows {
-            items.push((
-                row.get::<_, String>(0), // id
-                row.get::<_, String>(1), // filemoon_url (filecode)
-                row.get::<_, String>(2), // api_key
-            ));
+            let id: String = row.get(0);
+            let filemoon_url: String = row.get(1);
+            let settings_json: String = row.get(2);
+            let user_id: Option<String> = row.get(3);
+
+            // Parse the JSON settings to extract the API key
+            match serde_json::from_str::<serde_json::Value>(&settings_json) {
+                Ok(settings_obj) => {
+                    if let Some(api_key) = settings_obj
+                        .get("filemoon_api_key")
+                        .and_then(|v| v.as_str())
+                    {
+                        if !api_key.is_empty() {
+                            items.push((id, filemoon_url, api_key.to_string()));
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Failed to parse settings JSON, skip this item
+                }
+            }
         }
 
         Ok(items)

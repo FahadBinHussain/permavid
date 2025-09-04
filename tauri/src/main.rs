@@ -104,11 +104,33 @@ struct FilemoonRestartResponse {
     // Add other fields if the API returns more data
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct FilemoonEncodingStatusResponse {
-    status: u16,
-    msg: String,
-    result: Option<FilemoonEncodingStatusResult>,
+fn deserialize_result<'de, D>(
+    deserializer: D,
+) -> Result<Option<FilemoonEncodingStatusResult>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: serde_json::Value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Object(_) => {
+            // Try to deserialize as the result object
+            serde_json::from_value(value)
+                .map(Some)
+                .map_err(serde::de::Error::custom)
+        }
+        serde_json::Value::Array(ref arr) if arr.is_empty() => {
+            // Empty array means no result yet
+            Ok(None)
+        }
+        serde_json::Value::Null => {
+            // Null means no result
+            Ok(None)
+        }
+        _ => {
+            // Any other type, treat as no result
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -119,6 +141,14 @@ struct FilemoonEncodingStatusResult {
     progress: Option<String>, // Can be numeric or string like "91"
     status: String,           // e.g., "ENCODING", "FINISHED", "ERROR"
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FilemoonEncodingStatusResponse {
+    status: u16,
+    msg: String,
+    #[serde(deserialize_with = "deserialize_result")]
+    result: Option<FilemoonEncodingStatusResult>,
 }
 
 // --- ADDED: Structs for Filemoon File Info API ---
@@ -620,6 +650,48 @@ async fn get_gallery_items(
 }
 
 #[tauri::command]
+async fn debug_check_status(filecode: String, api_key: String) -> Result<Response<String>, String> {
+    println!("=== MANUAL FILEMOON STATUS CHECK ===");
+    println!("Checking filecode: {}", filecode);
+
+    let client = reqwest::Client::new();
+    let url = "https://filemoonapi.com/api/encoding/status";
+
+    match client
+        .get(url)
+        .query(&[("key", &api_key), ("file_code", &filecode)])
+        .send()
+        .await
+    {
+        Ok(response) => {
+            let status = response.status();
+            match response.text().await {
+                Ok(raw_text) => {
+                    println!("Raw Filemoon API Response: {}", raw_text);
+                    println!("HTTP Status: {}", status);
+
+                    return Ok(Response {
+                        success: true,
+                        message: format!("API Response (HTTP {})", status),
+                        data: Some(raw_text),
+                    });
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to read response: {}", e);
+                    println!("{}", error_msg);
+                    return Err(error_msg);
+                }
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("Request failed: {}", e);
+            println!("{}", error_msg);
+            return Err(error_msg);
+        }
+    }
+}
+
+#[tauri::command]
 async fn trigger_upload(
     id: String,
     user_id: String,
@@ -986,7 +1058,7 @@ async fn check_filemoon_status(
         item_id, filecode
     );
     let client = reqwest::Client::new();
-    let url = "https://api.filemoon.sx/api/encoding/status";
+    let url = "https://filemoonapi.com/api/encoding/status";
 
     match client
         .get(url)
@@ -1000,8 +1072,20 @@ async fn check_filemoon_status(
                 // Read as text first
                 Ok(raw_text) => {
                     // Now attempt to parse the raw text as JSON
+                    println!("========================================");
+                    println!("FILEMOON API RESPONSE DEBUG");
+                    println!("Item ID: {}", item_id);
+                    println!("Filecode: {}", filecode);
+                    println!("HTTP Status: {}", status);
+                    println!("Raw Response: {}", raw_text);
+                    println!("========================================");
+
                     match serde_json::from_str::<FilemoonEncodingStatusResponse>(&raw_text) {
                         Ok(resp_body) => {
+                            println!(
+                                "Parsed Response - API Status: {}, Message: {}, Result: {:?}",
+                                resp_body.status, resp_body.msg, resp_body.result
+                            );
                             if status.is_success() && resp_body.status == 200 {
                                 if let Some(result) = resp_body.result {
                                     let api_status = result.status.to_uppercase();
@@ -1015,9 +1099,16 @@ async fn check_filemoon_status(
                                     let new_db_status = match api_status.as_str() {
                                         "ENCODING" => "encoding",
                                         "PENDING" => "encoding",
-                                        "FINISHED" | "ACTIVE" => "encoded", // Consider FINISHED or ACTIVE as ready
+                                        "FINISHED" => "encoded",
+                                        "ACTIVE" => "encoded",
+                                        "READY" => "encoded",
+                                        "COMPLETED" => "encoded",
                                         "ERROR" => "failed",
-                                        _ => "transferring", // Keep checking if status unknown
+                                        "FAILED" => "failed",
+                                        _ => {
+                                            println!("Unknown Filemoon status '{}' for item {}, keeping as transferring", api_status, item_id);
+                                            "transferring"
+                                        }
                                     };
 
                                     println!("Item {} Filemoon Status Update: DB={}, API={}, Progress={:?}", item_id, new_db_status, api_status, progress);
@@ -1037,25 +1128,24 @@ async fn check_filemoon_status(
                                         eprintln!("Error updating encoding details: {}", e);
                                     }
                                 } else {
-                                    eprintln!("Item {} Filemoon status check successful but no result data (parsed from JSON)", item_id);
-                                    // Trigger file/info check as fallback
-                                    println!("Item {}: No result data in encoding/status for {}. Triggering file/info check.", item_id, item_id);
-                                    let item_id_clone = item_id.to_string();
-                                    let filecode_clone = filecode.to_string();
-                                    let api_key_clone = api_key.to_string();
-                                    let handle_clone = app_handle.clone();
-                                    tokio::spawn(async move {
-                                        let _ = check_filemoon_file_info(
-                                            &item_id_clone,
-                                            &filecode_clone,
-                                            &api_key_clone,
-                                            &handle_clone,
+                                    println!("Item {} - API returned empty/null result, file might still be processing", item_id);
+                                    // Keep status as transferring when no result data
+                                    let state = app_handle.state::<AppState>();
+                                    if let Err(e) = state
+                                        .db
+                                        .update_item_encoding_details(
+                                            item_id,
+                                            "transferring",
+                                            None,
+                                            Some("Filemoon: Still processing...".to_string()),
                                         )
-                                        .await;
-                                    });
+                                        .await
+                                    {
+                                        eprintln!("Error updating encoding details: {}", e);
+                                    }
                                 }
                             } else {
-                                eprintln!("Item {} Filemoon Status API Error (HTTP {}, API Status {}): {} (parsed from JSON)", item_id, status, resp_body.status, resp_body.msg);
+                                eprintln!("Item {} Filemoon Status API Error (HTTP {}, API Status {}): {}. Full response: {:?}", item_id, status, resp_body.status, resp_body.msg, resp_body);
                             }
                         }
                         Err(e) => {
@@ -1093,7 +1183,7 @@ async fn check_filemoon_file_info(
         item_id, filecode
     );
     let client = reqwest::Client::new();
-    let url = "https://api.filemoon.sx/api/file/info"; // Correct endpoint
+    let url = "https://filemoonapi.com/api/file/info";
 
     match client
         .get(url)
@@ -1898,7 +1988,8 @@ async fn main() {
             trigger_upload,
             cancel_item,
             restart_encoding,
-            get_gallery_items
+            get_gallery_items,
+            debug_check_status
         ])
         .setup(|app| {
             // Load .env.local file if it exists

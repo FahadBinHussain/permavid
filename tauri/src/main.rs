@@ -149,9 +149,10 @@ fn open_external_link(window: tauri::Window, url: String) -> Result<(), String> 
 
 #[tauri::command]
 async fn get_queue_items(
+    user_id: String,
     app_state: State<'_, AppState>,
 ) -> Result<Response<Vec<QueueItem>>, String> {
-    match app_state.db.get_queue_items().await {
+    match app_state.db.get_queue_items(&user_id).await {
         Ok(items) => Ok(Response {
             success: true,
             message: "Queue items retrieved successfully".to_string(),
@@ -164,9 +165,12 @@ async fn get_queue_items(
 #[tauri::command]
 async fn add_queue_item(
     item: QueueItem,
+    user_id: String,
     app_state: State<'_, AppState>,
 ) -> Result<Response<String>, String> {
-    match app_state.db.add_queue_item(&item).await {
+    let mut item_with_user = item;
+    item_with_user.user_id = Some(user_id);
+    match app_state.db.add_queue_item(&item_with_user).await {
         Ok(id) => {
             // After adding, immediately signal the background task (if possible)
             // Or rely on its periodic check
@@ -215,9 +219,14 @@ async fn update_item_status(
 #[tauri::command]
 async fn clear_completed_items(
     status_types: Vec<String>,
+    user_id: String,
     app_state: State<'_, AppState>,
 ) -> Result<Response<()>, String> {
-    match app_state.db.clear_items_by_status(&status_types).await {
+    match app_state
+        .db
+        .clear_items_by_status(&status_types, &user_id)
+        .await
+    {
         Ok(_) => Ok(Response {
             success: true,
             message: "Items cleared successfully".to_string(),
@@ -229,10 +238,10 @@ async fn clear_completed_items(
 
 #[tauri::command]
 async fn get_settings(
-    userId: String,
+    user_id: String,
     app_state: State<'_, AppState>,
 ) -> Result<Response<AppSettings>, String> {
-    match app_state.db.get_settings(&userId).await {
+    match app_state.db.get_settings(&user_id).await {
         Ok(settings) => Ok(Response {
             success: true,
             message: "Settings retrieved successfully".to_string(),
@@ -258,10 +267,10 @@ async fn get_settings(
 #[tauri::command]
 async fn save_settings(
     settings: AppSettings,
-    userId: String,
+    user_id: String,
     app_state: State<'_, AppState>,
 ) -> Result<Response<()>, String> {
-    match app_state.db.save_settings(&settings, &userId).await {
+    match app_state.db.save_settings(&settings, &user_id).await {
         Ok(_) => Ok(Response {
             success: true,
             message: "Settings saved successfully".to_string(),
@@ -462,6 +471,7 @@ async fn cancel_item(id: String, app_state: State<'_, AppState>) -> Result<Respo
 #[tauri::command]
 async fn restart_encoding(
     id: String,
+    user_id: String,
     app_state: State<'_, AppState>,
 ) -> Result<Response<()>, String> {
     let filecode: String;
@@ -484,7 +494,7 @@ async fn restart_encoding(
         }
     };
 
-    let settings = match app_state.db.get_settings("local-user").await {
+    let settings = match app_state.db.get_settings(&user_id).await {
         Ok(s) => s,
         Err(e) => return Err(format!("Failed to get settings for restart: {}", e)),
     };
@@ -596,9 +606,10 @@ async fn restart_encoding(
 
 #[tauri::command]
 async fn get_gallery_items(
+    user_id: String,
     app_state: State<'_, AppState>,
 ) -> Result<Response<Vec<QueueItem>>, String> {
-    match app_state.db.get_gallery_items().await {
+    match app_state.db.get_gallery_items(&user_id).await {
         Ok(items) => Ok(Response {
             success: true,
             message: "Gallery items retrieved successfully".to_string(),
@@ -611,6 +622,7 @@ async fn get_gallery_items(
 #[tauri::command]
 async fn trigger_upload(
     id: String,
+    user_id: String,
     app_state: State<'_, AppState>,
 ) -> Result<Response<String>, String> {
     let local_path_str: String;
@@ -625,7 +637,7 @@ async fn trigger_upload(
         Err(e) => return Err(format!("Database error retrieving item: {}", e)),
     };
 
-    settings_clone = match app_state.db.get_settings("local-user").await {
+    settings_clone = match app_state.db.get_settings(&user_id).await {
         Ok(settings) => settings,
         Err(e) => return Err(format!("Failed to retrieve settings: {}", e)),
     };
@@ -1282,7 +1294,11 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
 
             // Get settings and mark as downloading
             let app_state: State<'_, AppState> = app_handle.state();
-            let settings = match app_state.db.get_settings("local-user").await {
+            let settings = match app_state
+                .db
+                .get_settings(next_item.user_id.as_deref().unwrap_or("local-user"))
+                .await
+            {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Error getting settings for item {}: {}", item_id, e);
@@ -1766,7 +1782,11 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                     }
 
                     // Check for auto-upload
-                    let settings_after = match app_state.db.get_settings("local-user").await {
+                    let settings_after = match app_state
+                        .db
+                        .get_settings(next_item.user_id.as_deref().unwrap_or("local-user"))
+                        .await
+                    {
                         Ok(s) => s,
                         Err(_) => AppSettings::default(),
                     };
@@ -1782,8 +1802,29 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         let upload_id = item_id.clone();
                         let app_handle_clone = app_handle.clone();
                         tokio::spawn(async move {
-                            if let Err(e) =
-                                trigger_upload(upload_id.clone(), app_handle_clone.state()).await
+                            let item = match app_handle_clone
+                                .state::<AppState>()
+                                .db
+                                .get_item_by_id(&upload_id)
+                                .await
+                            {
+                                Ok(Some(item)) => item,
+                                Ok(None) => {
+                                    eprintln!("Item {} not found for auto-upload", upload_id);
+                                    return;
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to get item for auto-upload: {}", e);
+                                    return;
+                                }
+                            };
+
+                            if let Err(e) = trigger_upload(
+                                upload_id.clone(),
+                                item.user_id.unwrap_or_else(|| "local-user".to_string()),
+                                app_handle_clone.state(),
+                            )
+                            .await
                             {
                                 eprintln!("Auto-upload failed for {}: {}", upload_id, e);
                                 // Optionally update status back to indicate upload failure

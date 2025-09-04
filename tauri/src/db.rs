@@ -43,6 +43,7 @@ pub struct QueueItem {
     pub added_at: Option<i64>,
     pub updated_at: Option<i64>,
     pub local_path: Option<String>,
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -199,8 +200,8 @@ impl Database {
         client
             .execute(
                 "INSERT INTO queue (id, url, status, message, title, filemoon_url,
-                                encoding_progress, thumbnail_url, added_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                                encoding_progress, thumbnail_url, added_at, updated_at, user_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                 &[
                     &id,
                     &item.url,
@@ -212,6 +213,7 @@ impl Database {
                     &item.thumbnail_url,
                     &(item.added_at.unwrap_or(now) as i64),
                     &(now as i64),
+                    &item.user_id.as_ref().unwrap(),
                 ],
             )
             .await?;
@@ -235,8 +237,9 @@ impl Database {
                  encoding_progress = $6,
                  thumbnail_url = $7,
                  updated_at = $8,
-                 local_path = $9
-                 WHERE id = $10",
+                 local_path = $9,
+                 user_id = $10
+                 WHERE id = $11",
                     &[
                         &item.url,
                         &item.status,
@@ -247,6 +250,7 @@ impl Database {
                         &item.thumbnail_url,
                         &(now as i64),
                         &item.local_path,
+                        &item.user_id.as_ref().unwrap_or(&String::new()),
                         &id,
                     ],
                 )
@@ -275,17 +279,17 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_queue_items(&self) -> Result<Vec<QueueItem>> {
+    pub async fn get_queue_items(&self, user_id: &str) -> Result<Vec<QueueItem>> {
         let client = self.get_client().await?;
 
         let rows = client
             .query(
-                "SELECT id, url, status, message, title, filemoon_url,
-                    encoding_progress, thumbnail_url, added_at, updated_at, local_path
-             FROM queue
-             WHERE status != 'encoded'
-             ORDER BY added_at DESC",
-                &[],
+                "SELECT id, url, status, message, title, filemoon_url, encoding_progress,
+                        thumbnail_url, added_at, updated_at, local_path, user_id
+                 FROM queue
+                 WHERE status != 'uploaded' AND user_id = $1
+                 ORDER BY added_at DESC",
+                &[&user_id],
             )
             .await?;
 
@@ -303,23 +307,24 @@ impl Database {
                 added_at: Some(row.get::<_, i64>(8)),
                 updated_at: Some(row.get::<_, i64>(9)),
                 local_path: row.get::<_, Option<String>>(10),
+                user_id: Some(row.get::<_, String>(11)),
             });
         }
 
         Ok(items)
     }
 
-    pub async fn get_gallery_items(&self) -> Result<Vec<QueueItem>> {
+    pub async fn get_gallery_items(&self, user_id: &str) -> Result<Vec<QueueItem>> {
         let client = self.get_client().await?;
 
         let rows = client
             .query(
-                "SELECT id, url, status, message, title, filemoon_url,
-                    encoding_progress, thumbnail_url, added_at, updated_at, local_path
-             FROM queue
-             WHERE status = 'encoded' OR status = 'completed'
-             ORDER BY updated_at DESC",
-                &[],
+                "SELECT id, url, status, message, title, filemoon_url, encoding_progress,
+                        thumbnail_url, added_at, updated_at, local_path, user_id
+                 FROM queue
+                 WHERE status = 'uploaded' AND user_id = $1
+                 ORDER BY updated_at DESC",
+                &[&user_id],
             )
             .await?;
 
@@ -337,6 +342,7 @@ impl Database {
                 added_at: Some(row.get::<_, i64>(8)),
                 updated_at: Some(row.get::<_, i64>(9)),
                 local_path: row.get::<_, Option<String>>(10),
+                user_id: Some(row.get::<_, String>(11)),
             });
         }
 
@@ -447,12 +453,12 @@ impl Database {
 
         let rows = client
             .query(
-                "SELECT id, url, status, message, title, filemoon_url,
-                    encoding_progress, thumbnail_url, added_at, updated_at, local_path
-             FROM queue
-             WHERE status = 'queued'
-             ORDER BY added_at ASC
-             LIMIT 1",
+                "SELECT id, url, status, message, title, filemoon_url, encoding_progress,
+                        thumbnail_url, added_at, updated_at, local_path, user_id
+                 FROM queue
+                 WHERE status = 'queued'
+                 ORDER BY added_at ASC
+                 LIMIT 1",
                 &[],
             )
             .await?;
@@ -474,6 +480,7 @@ impl Database {
             added_at: Some(row.get::<_, i64>(8)),
             updated_at: Some(row.get::<_, i64>(9)),
             local_path: row.get::<_, Option<String>>(10),
+            user_id: Some(row.get::<_, String>(11)),
         };
 
         Ok(Some(item))
@@ -542,10 +549,11 @@ impl Database {
 
         let rows = client
             .query(
-                "SELECT id, url, status, message, title, filemoon_url,
-                    encoding_progress, thumbnail_url, added_at, updated_at, local_path
-             FROM queue
-             WHERE id = $1",
+                "SELECT id, url, status, message, title, filemoon_url, encoding_progress,
+                        thumbnail_url, added_at, updated_at, local_path, user_id
+                 FROM queue
+                 WHERE id = $1
+                 LIMIT 1",
                 &[&id],
             )
             .await?;
@@ -567,6 +575,7 @@ impl Database {
             added_at: Some(row.get::<_, i64>(8)),
             updated_at: Some(row.get::<_, i64>(9)),
             local_path: row.get::<_, Option<String>>(10),
+            user_id: Some(row.get::<_, String>(11)),
         };
 
         Ok(Some(item))
@@ -622,7 +631,11 @@ impl Database {
         Ok(())
     }
 
-    pub async fn clear_items_by_status(&self, status_types: &[String]) -> Result<()> {
+    pub async fn clear_items_by_status(
+        &self,
+        status_types: &[String],
+        user_id: &str,
+    ) -> Result<()> {
         if status_types.is_empty() {
             return Ok(());
         }
@@ -632,7 +645,10 @@ impl Database {
         // Delete items for each status type individually
         for status in status_types {
             client
-                .execute("DELETE FROM queue WHERE status = $1", &[&status.as_str()])
+                .execute(
+                    "DELETE FROM queue WHERE status = $1 AND user_id = $2",
+                    &[&status.as_str(), &user_id],
+                )
                 .await?;
         }
 

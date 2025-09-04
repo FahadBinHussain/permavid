@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/tauri";
+import { getCurrentUserId } from "./db";
 
 // Type definitions
 export interface QueueItem {
@@ -35,7 +36,8 @@ interface UploadResponse {
 // Queue related functions
 export async function getQueueItems() {
   try {
-    const response = await invoke("get_queue_items");
+    const userId = await getCurrentUserId();
+    const response = await invoke("get_queue_items", { userId });
     if (
       typeof response === "object" &&
       response !== null &&
@@ -52,7 +54,8 @@ export async function getQueueItems() {
 
 export async function addQueueItem(item: QueueItem) {
   try {
-    const id: string = await invoke("add_queue_item", { item });
+    const userId = await getCurrentUserId();
+    const id: string = await invoke("add_queue_item", { item, userId });
     return id;
   } catch (err: any) {
     // Convert error to string for checking
@@ -100,7 +103,8 @@ export async function clearCompletedItems(statusTypes: string[]) {
       "[Tauri API] Calling clear_completed_items with direct array:",
       JSON.stringify(statusTypes),
     );
-    await invoke("clear_completed_items", { statusTypes });
+    const userId = await getCurrentUserId();
+    await invoke("clear_completed_items", { statusTypes, userId });
   } catch (error) {
     console.error("Error clearing completed items via Tauri:", error);
     throw error;
@@ -110,8 +114,9 @@ export async function clearCompletedItems(statusTypes: string[]) {
 // Settings related functions
 export async function getSettings(userId?: string) {
   try {
+    const currentUserId = userId || (await getCurrentUserId());
     const response = await invoke("get_settings", {
-      userId: userId || "local-user",
+      userId: currentUserId,
     });
 
     // Add debug logging
@@ -139,9 +144,10 @@ export async function getSettings(userId?: string) {
 
 export async function saveSettings(settings: AppSettings, userId?: string) {
   try {
+    const currentUserId = userId || (await getCurrentUserId());
     await invoke("save_settings", {
       settings,
-      userId: userId || "local-user",
+      userId: currentUserId,
     });
   } catch (error) {
     console.error("Error saving settings via Tauri:", error);
@@ -217,8 +223,12 @@ export async function retryItem(id: string): Promise<string> {
 // --- ADDED: Function to trigger upload via Tauri ---
 export async function triggerUpload(id: string): Promise<UploadResponse> {
   try {
+    const userId = await getCurrentUserId();
     // Result should match the Response<String> structure from Rust
-    const response: UploadResponse = await invoke("trigger_upload", { id });
+    const response: UploadResponse = await invoke("trigger_upload", {
+      id,
+      userId,
+    });
     // No need to check success here, let the caller handle the full response
     return response;
   } catch (error) {
@@ -266,8 +276,9 @@ export async function restartEncoding(
   id: string,
 ): Promise<{ success: boolean; message: string }> {
   try {
+    const userId = await getCurrentUserId();
     // Response structure matches Rust Response<()> which becomes { success, message, data: null }
-    const response: any = await invoke("restart_encoding", { id });
+    const response: any = await invoke("restart_encoding", { id, userId });
     if (!response || !response.success) {
       throw new Error(
         response?.message || "Failed to restart encoding in backend.",
@@ -295,8 +306,9 @@ export async function getGalleryItems(): Promise<{
 }> {
   try {
     console.log("[Tauri API] Calling invoke('get_gallery_items')...");
+    const userId = await getCurrentUserId();
     // Response structure matches Rust Response<Vec<QueueItem>>
-    const response: any = await invoke("get_gallery_items");
+    const response: any = await invoke("get_gallery_items", { userId });
 
     console.log(
       "[Tauri API] Raw response from get_gallery_items:",

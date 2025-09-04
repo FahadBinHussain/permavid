@@ -303,7 +303,7 @@ const QueueListItem: React.FC<QueueItemProps> = ({
                 <XCircleIcon className="h-3.5 w-3.5" />,
               )}
             {/* Upload Button */}
-            {(item.status === "completed" || item.status === "encoded") &&
+            {item.status === "completed" &&
               renderButton(
                 "Upload",
                 () => handleAction(onUpload),

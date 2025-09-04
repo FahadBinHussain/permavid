@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::env;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tauri::AppHandle;
 use uuid::Uuid;
 
@@ -173,7 +174,6 @@ impl Database {
             .id
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let now = Utc::now().timestamp_millis();
 
         // Check if URL already exists
         let rows = client
@@ -196,6 +196,13 @@ impl Database {
             return Err(error_message.into());
         }
 
+        // Convert timestamps to SystemTime for PostgreSQL compatibility
+        let added_at_timestamp = if let Some(added_at) = item.added_at {
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(added_at as u64)
+        } else {
+            SystemTime::now()
+        };
+
         // Insert new queue item
         client
             .execute(
@@ -211,8 +218,8 @@ impl Database {
                     &item.filemoon_url,
                     &item.encoding_progress,
                     &item.thumbnail_url,
-                    &(item.added_at.unwrap_or(now) as i64),
-                    &(now as i64),
+                    &added_at_timestamp,
+                    &SystemTime::now(),
                     &item.user_id.as_ref().unwrap(),
                 ],
             )
@@ -223,7 +230,6 @@ impl Database {
 
     pub async fn update_queue_item(&self, item: &QueueItem) -> Result<()> {
         let client = self.get_client().await?;
-        let now = Utc::now().timestamp_millis();
 
         if let Some(id) = &item.id {
             client
@@ -248,7 +254,7 @@ impl Database {
                         &item.filemoon_url,
                         &item.encoding_progress,
                         &item.thumbnail_url,
-                        &(now as i64),
+                        &SystemTime::now(),
                         &item.local_path,
                         &item.user_id.as_ref().unwrap_or(&String::new()),
                         &id,
@@ -267,12 +273,11 @@ impl Database {
         message: Option<String>,
     ) -> Result<()> {
         let client = self.get_client().await?;
-        let now = Utc::now().timestamp_millis();
 
         client
             .execute(
                 "UPDATE queue SET status = $1, message = $2, updated_at = $3 WHERE id = $4",
-                &[&status, &message, &(now as i64), &id],
+                &[&status, &message, &SystemTime::now(), &id],
             )
             .await?;
 
@@ -304,8 +309,18 @@ impl Database {
                 filemoon_url: row.get::<_, Option<String>>(5),
                 encoding_progress: row.get::<_, Option<i32>>(6),
                 thumbnail_url: row.get::<_, Option<String>>(7),
-                added_at: Some(row.get::<_, i64>(8)),
-                updated_at: Some(row.get::<_, i64>(9)),
+                added_at: Some(
+                    row.get::<_, SystemTime>(8)
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64,
+                ),
+                updated_at: Some(
+                    row.get::<_, SystemTime>(9)
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64,
+                ),
                 local_path: row.get::<_, Option<String>>(10),
                 user_id: Some(row.get::<_, String>(11)),
             });
@@ -339,8 +354,18 @@ impl Database {
                 filemoon_url: row.get::<_, Option<String>>(5),
                 encoding_progress: row.get::<_, Option<i32>>(6),
                 thumbnail_url: row.get::<_, Option<String>>(7),
-                added_at: Some(row.get::<_, i64>(8)),
-                updated_at: Some(row.get::<_, i64>(9)),
+                added_at: Some(
+                    row.get::<_, SystemTime>(8)
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64,
+                ),
+                updated_at: Some(
+                    row.get::<_, SystemTime>(9)
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64,
+                ),
                 local_path: row.get::<_, Option<String>>(10),
                 user_id: Some(row.get::<_, String>(11)),
             });
@@ -477,8 +502,18 @@ impl Database {
             filemoon_url: row.get::<_, Option<String>>(5),
             encoding_progress: row.get::<_, Option<i32>>(6),
             thumbnail_url: row.get::<_, Option<String>>(7),
-            added_at: Some(row.get::<_, i64>(8)),
-            updated_at: Some(row.get::<_, i64>(9)),
+            added_at: Some(
+                row.get::<_, SystemTime>(8)
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+            ),
+            updated_at: Some(
+                row.get::<_, SystemTime>(9)
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+            ),
             local_path: row.get::<_, Option<String>>(10),
             user_id: Some(row.get::<_, String>(11)),
         };
@@ -517,7 +552,6 @@ impl Database {
         message: Option<String>,
     ) -> Result<()> {
         let client = self.get_client().await?;
-        let now = Utc::now().timestamp_millis();
 
         client
             .execute(
@@ -535,7 +569,7 @@ impl Database {
                     &local_path,
                     &thumbnail_url,
                     &message,
-                    &(now as i64),
+                    &SystemTime::now(),
                     &id,
                 ],
             )
@@ -572,8 +606,18 @@ impl Database {
             filemoon_url: row.get::<_, Option<String>>(5),
             encoding_progress: row.get::<_, Option<i32>>(6),
             thumbnail_url: row.get::<_, Option<String>>(7),
-            added_at: Some(row.get::<_, i64>(8)),
-            updated_at: Some(row.get::<_, i64>(9)),
+            added_at: Some(
+                row.get::<_, SystemTime>(8)
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+            ),
+            updated_at: Some(
+                row.get::<_, SystemTime>(9)
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+            ),
             local_path: row.get::<_, Option<String>>(10),
             user_id: Some(row.get::<_, String>(11)),
         };
@@ -630,7 +674,6 @@ impl Database {
         message: Option<String>,
     ) -> Result<()> {
         let client = self.get_client().await?;
-        let now = Utc::now().timestamp_millis();
 
         client
             .execute(
@@ -640,7 +683,13 @@ impl Database {
                 message = $3,
                 updated_at = $4
             WHERE id = $5",
-                &[&status, &encoding_progress, &message, &(now as i64), &id],
+                &[
+                    &status,
+                    &encoding_progress,
+                    &message,
+                    &SystemTime::now(),
+                    &id,
+                ],
             )
             .await?;
 

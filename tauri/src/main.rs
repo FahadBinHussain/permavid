@@ -1128,16 +1128,16 @@ async fn check_filemoon_status(
                                         eprintln!("Error updating encoding details: {}", e);
                                     }
                                 } else {
-                                    println!("Item {} - API returned empty/null result, file might still be processing", item_id);
-                                    // Keep status as transferring when no result data
+                                    println!("Item {} - API returned empty/null result, file no longer in encoding queue - marking as encoded", item_id);
+                                    // When file is no longer in encoding queue, it means encoding is complete
                                     let state = app_handle.state::<AppState>();
                                     if let Err(e) = state
                                         .db
                                         .update_item_encoding_details(
                                             item_id,
-                                            "transferring",
-                                            None,
-                                            Some("Filemoon: Still processing...".to_string()),
+                                            "encoded",
+                                            Some(100),
+                                            Some("Encoding complete - file ready".to_string()),
                                         )
                                         .await
                                     {
@@ -1311,27 +1311,54 @@ async fn check_filemoon_readiness(
         item_id, filecode
     );
 
-    // 1. Check file/info first
-    match check_filemoon_file_info(item_id, filecode, api_key, app_handle).await {
-        Ok(true) => {
-            // file/info confirmed ready, status updated inside, nothing more to do.
-            println!("Item {} confirmed ready via file/info.", item_id);
-        }
-        Ok(false) => {
-            // file/info says not ready yet, proceed to check encoding/status
+    // 1. Check encoding/status first (authoritative for encoding state)
+    println!("Checking encoding/status for item {}", item_id);
+    check_filemoon_status(item_id, filecode, api_key, app_handle).await;
+
+    // 2. Get current status after encoding check to decide if we need file/info check
+    let state = app_handle.state::<AppState>();
+    match state.db.get_item_by_id(item_id).await {
+        Ok(Some(item)) if item.status == "encoded" => {
+            // Only if encoding status confirmed it's encoded, then verify with file/info
             println!(
-                "Item {} not ready via file/info, checking encoding/status...",
+                "Encoding status shows encoded for item {}, verifying with file/info",
                 item_id
             );
-            check_filemoon_status(item_id, filecode, api_key, app_handle).await;
+            match check_filemoon_file_info(item_id, filecode, api_key, app_handle).await {
+                Ok(true) => println!("Item {} confirmed ready via file/info", item_id),
+                Ok(false) => {
+                    // File/info says not ready, revert to encoding status
+                    println!(
+                        "Item {} file/info says not ready, reverting to encoding status",
+                        item_id
+                    );
+                    if let Err(e) = state
+                        .db
+                        .update_item_encoding_details(
+                            item_id,
+                            "encoding",
+                            None,
+                            Some("File not yet playable".to_string()),
+                        )
+                        .await
+                    {
+                        eprintln!("Error reverting status to encoding: {}", e);
+                    }
+                }
+                Err(e) => println!("File/info check failed for {}: {}", item_id, e),
+            }
+        }
+        Ok(Some(item)) => {
+            println!(
+                "Item {} has status '{}', skipping file/info check",
+                item_id, item.status
+            );
+        }
+        Ok(None) => {
+            eprintln!("Item {} not found after encoding status check", item_id);
         }
         Err(e) => {
-            // file/info failed (API error, parse error, etc.), proceed to check encoding/status as fallback
-            eprintln!(
-                "File/info check failed for {}: {}. Falling back to encoding/status check...",
-                item_id, e
-            );
-            check_filemoon_status(item_id, filecode, api_key, app_handle).await;
+            eprintln!("Error getting item {} status: {}", item_id, e);
         }
     }
 }

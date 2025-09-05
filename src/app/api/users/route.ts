@@ -7,10 +7,7 @@ export async function POST(request: NextRequest) {
     const { googleId, name, email, image } = body;
 
     if (!email) {
-      return NextResponse.json(
-        { error: "Email is required" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
     // Check if user already exists by email
@@ -44,6 +41,26 @@ export async function POST(request: NextRequest) {
         lastLogin: new Date(),
       },
     });
+
+    // Create default settings for new user
+    const defaultSettingsObject = {
+      filemoon_api_key: "",
+      download_directory: "",
+      delete_after_upload: "true",
+      auto_upload: "true",
+      upload_target: "filemoon",
+    };
+
+    // Create the user_settings JSON entry that Tauri expects
+    await prisma.setting.create({
+      data: {
+        key: "user_settings",
+        value: JSON.stringify(defaultSettingsObject),
+        userId: newUser.id,
+      },
+    });
+
+    console.log("Default settings created for new user:", newUser.id);
 
     return NextResponse.json({
       success: true,

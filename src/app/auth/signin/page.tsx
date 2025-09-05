@@ -8,6 +8,7 @@ import { useAuth } from "../../auth-provider";
 export default function SignIn() {
   const [isLoading, setIsLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [showCancelButton, setShowCancelButton] = useState(false);
   const router = useRouter();
   const { user, status, error: authError, signIn } = useAuth();
 
@@ -28,19 +29,45 @@ export default function SignIn() {
     }
   }, [status]);
 
+  // Reset loading state when auth status changes back to unauthenticated
+  useEffect(() => {
+    if (status === "unauthenticated" && isLoading) {
+      console.log(
+        "SignIn: Auth status changed to unauthenticated, resetting loading state",
+      );
+      setIsLoading(false);
+    }
+  }, [status, isLoading]);
+
   const handleGoogleSignIn = async () => {
     try {
       setIsLoading(true);
       setLocalError(null);
+      setShowCancelButton(false);
       console.log("SignIn: Starting Google sign-in process");
       signIn();
+
+      // Show cancel button after 5 seconds
+      setTimeout(() => {
+        if (isLoading) {
+          setShowCancelButton(true);
+        }
+      }, 5000);
     } catch (error) {
       console.error("SignIn: Error signing in with Google:", error);
       setLocalError(
         error instanceof Error ? error.message : "Authentication failed",
       );
       setIsLoading(false);
+      setShowCancelButton(false);
     }
+  };
+
+  const handleCancelSignIn = () => {
+    setIsLoading(false);
+    setShowCancelButton(false);
+    setLocalError(null);
+    console.log("SignIn: User cancelled sign-in process");
   };
 
   // Don't render anything if already authenticated and redirecting
@@ -93,9 +120,19 @@ export default function SignIn() {
             className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 dark:border-gray-700 rounded-md shadow-sm text-sm font-medium text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 transition-colors"
           >
             {isLoading ? (
-              <div className="flex items-center">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 dark:border-gray-300 mr-2"></div>
-                <span>Connecting to Google...</span>
+              <div className="flex flex-col items-center space-y-2">
+                <div className="flex items-center">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 dark:border-gray-300 mr-2"></div>
+                  <span>Connecting to Google...</span>
+                </div>
+                {showCancelButton && (
+                  <button
+                    onClick={handleCancelSignIn}
+                    className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 underline"
+                  >
+                    Cancel
+                  </button>
+                )}
               </div>
             ) : (
               <>

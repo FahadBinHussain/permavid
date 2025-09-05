@@ -2,6 +2,46 @@ import { sql, getCurrentUserId } from "./db";
 import { AppSettings } from "@/lib/tauri-api";
 
 /**
+ * Gets the default Downloads directory for the current user/OS
+ */
+async function getDefaultDownloadsDirectory(): Promise<string> {
+  try {
+    // Check if we're in a browser environment
+    if (typeof window !== "undefined") {
+      // In browser, use the Tauri API
+      const { os } = await import("@tauri-apps/api");
+      const platform = await os.platform();
+
+      if (platform === "win32") {
+        // Windows: C:\Users\{username}\Downloads
+        // Use Tauri's path API to get the proper Downloads directory
+        const { homeDir } = await import("@tauri-apps/api/path");
+        const home = await homeDir();
+        return `${home}Downloads`;
+      } else if (platform === "darwin") {
+        // macOS: /Users/{username}/Downloads
+        const { homeDir } = await import("@tauri-apps/api/path");
+        const home = await homeDir();
+        return `${home}Downloads`;
+      } else {
+        // Linux: /home/{username}/Downloads
+        const { homeDir } = await import("@tauri-apps/api/path");
+        const home = await homeDir();
+        return `${home}Downloads`;
+      }
+    } else {
+      // In Node.js environment, use environment variables
+      const os = require("os");
+      const path = require("path");
+      return path.join(os.homedir(), "Downloads");
+    }
+  } catch (error) {
+    console.error("Error getting default downloads directory:", error);
+    return "./downloads"; // Fallback to relative path
+  }
+}
+
+/**
  * Retrieves a specific setting value from the database.
  * @param key The key of the setting to retrieve.
  * @param isGlobal Whether to retrieve a global setting (not user-specific).
@@ -125,9 +165,10 @@ export async function getAppSettings(): Promise<AppSettings> {
   }
 
   // Default settings if not found
+  const defaultDownloadDir = await getDefaultDownloadsDirectory();
   return {
     filemoon_api_key: "",
-    download_directory: "./downloads",
+    download_directory: defaultDownloadDir,
     delete_after_upload: "false",
     auto_upload: "false",
     upload_target: "none",

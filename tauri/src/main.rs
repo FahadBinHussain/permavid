@@ -36,9 +36,11 @@ fn extract_facebook_video_id(url: &str) -> Option<String> {
         // Matches:
         // - /videos/123456789/
         // - /v/123456789/
+        // - /reel/123456789/
+        // - /watch/?v=123456789
         // - videos=123456789
         // - v=123456789
-        static ref FB_VIDEO_ID_REGEX: Regex = Regex::new(r"(?:/videos/|/v/|videos=|v=)(\d+)").unwrap();
+        static ref FB_VIDEO_ID_REGEX: Regex = Regex::new(r"(?:/videos/|/v/|/reel/|/watch/\?v=|videos=|v=)(\d+)").unwrap();
     }
 
     FB_VIDEO_ID_REGEX

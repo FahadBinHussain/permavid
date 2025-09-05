@@ -66,20 +66,65 @@ pnpm run dev:electron
 
 ---
 
-## Building for Production
+## 🏗️ Building for Production
 
-- **Tauri:**
-  ```bash
-  pnpm run build:tauri
-  ```
-- **Electron:**
-  ```bash
-  pnpm run build && pnpm run dist
-  ```
-- **Next.js:**
-  ```bash
-  pnpm run build && pnpm start
-  ```
+### Prerequisites for Production Build
+
+Before building, ensure you have:
+1. **Rust installed** (for Tauri): https://rustup.rs/
+2. **All dependencies installed**: `pnpm install`
+3. **Environment variables configured**:
+   - `.env.local` with Google OAuth credentials
+   - `.env` with Neon PostgreSQL connection string
+
+### Tauri Desktop App (Recommended)
+
+The Tauri build creates a native desktop application with the smallest file size and best performance:
+
+1. **Development build** (for testing):
+   ```bash
+   pnpm run build:tauri
+   ```
+
+2. **Production release build**:
+   ```bash
+   pnpm run tauri build
+   ```
+
+This will create:
+- **Windows**: `.exe` installer in `tauri/target/release/bundle/msi/`
+- **macOS**: `.app` and `.dmg` in `tauri/target/release/bundle/dmg/`
+- **Linux**: `.deb`, `.rpm`, and `.AppImage` in `tauri/target/release/bundle/`
+
+### Build Configuration
+
+The production build automatically:
+- ✅ Sets auto-upload to `true` by default
+- ✅ Sets delete-after-upload to `true` by default  
+- ✅ Uses user's Downloads directory automatically
+- ✅ Includes simplified 2-state system (downloaded → uploaded)
+- ✅ Handles popup-closed errors gracefully
+- ✅ Creates default settings for new users
+
+### Alternative Build Methods
+
+**Electron (if preferred):**
+```bash
+pnpm run build && pnpm run dist
+```
+
+**Next.js Web App:**
+```bash
+pnpm run build && pnpm start
+```
+
+### Distribution
+
+The final executable will be a standalone installer that includes:
+- Complete video downloading capabilities (yt-dlp)
+- Local PostgreSQL database
+- All dependencies bundled
+- No additional runtime requirements
 
 ---
 

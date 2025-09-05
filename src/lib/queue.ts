@@ -63,8 +63,6 @@ function convertPrismaQueueItem(item: any): QueueItem {
 export async function addToQueue(
   url: string,
 ): Promise<{ success: boolean; message: string; item?: QueueItem }> {
-  const now = Date.now();
-
   try {
     const userId = await getCurrentUserId();
 
@@ -82,14 +80,16 @@ export async function addToQueue(
       };
     }
 
+    const now = new Date();
+
     // Insert the new item
     const newItem = await prisma.queueItem.create({
       data: {
         id: uuidv4(),
         url,
         status: "queued",
-        addedAt: BigInt(now),
-        updatedAt: BigInt(now),
+        addedAt: now,
+        updatedAt: now,
         userId,
       },
     });
@@ -183,7 +183,7 @@ export async function updateItemStatus(
         title,
         localPath,
         infoJsonPath,
-        updatedAt: BigInt(now),
+        updatedAt: new Date(),
       },
     });
 
@@ -220,7 +220,7 @@ export async function markDownloading(
       data: {
         status: "downloading",
         message,
-        updatedAt: BigInt(now),
+        updatedAt: new Date(),
       },
     });
 
@@ -256,7 +256,7 @@ export async function updateDownloadProgress(
       },
       data: {
         message,
-        updatedAt: BigInt(now),
+        updatedAt: new Date(),
       },
     });
 

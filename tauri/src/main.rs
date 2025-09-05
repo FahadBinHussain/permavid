@@ -1676,6 +1676,9 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         let upload_id = item_id.clone();
                         let app_handle_clone = app_handle.clone();
                         tokio::spawn(async move {
+                            // Add small delay to ensure database update is committed
+                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
                             let item = match app_handle_clone
                                 .state::<AppState>()
                                 .db

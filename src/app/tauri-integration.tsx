@@ -380,14 +380,10 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     [fetchQueueItems],
   );
 
-  const handleRestartEncoding = useCallback(
-    async (id: string) => {
-      const result = await restartEncoding(id);
-      await fetchQueueItems();
-      return result;
-    },
-    [fetchQueueItems],
-  );
+  const handleRestartEncoding = useCallback(async (id: string) => {
+    // Restart encoding functionality removed in simplified system
+    return { success: false, message: "Restart encoding not available" };
+  }, []);
 
   const memoizedContributeIdentifier = useCallback(
     async (url: string) => {

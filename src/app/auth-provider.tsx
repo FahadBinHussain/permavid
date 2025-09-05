@@ -302,8 +302,8 @@ function AuthContextProvider({ children }: { children: ReactNode }) {
       let errorString = "";
       if (typeof error === "string") {
         errorString = error;
-      } else if (error?.message) {
-        errorString = error.message;
+      } else if (error && typeof error === "object" && "message" in error) {
+        errorString = (error as any).message;
       } else if (error?.toString) {
         errorString = error.toString();
       } else {
@@ -329,9 +329,15 @@ function AuthContextProvider({ children }: { children: ReactNode }) {
     },
     onNonOAuthError: (error) => {
       // Check if this is a popup closed error
-      const errorMessage = error?.message || error?.toString() || "";
+      const errorMessage =
+        (error && typeof error === "object" && "message" in error
+          ? (error as any).message
+          : error?.toString()) || "";
       const isPopupClosed =
-        error?.type === "popup_closed" ||
+        (error &&
+          typeof error === "object" &&
+          "type" in error &&
+          (error as any).type === "popup_closed") ||
         errorMessage.includes("Popup window closed") ||
         errorMessage.includes("popup_closed");
 

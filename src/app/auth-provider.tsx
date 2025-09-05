@@ -249,6 +249,46 @@ function AuthContextProvider({ children }: { children: ReactNode }) {
         setUser(userData);
         setStatus("authenticated");
         setError(null);
+
+        // Save default settings for new users (in Tauri environment only)
+        if (typeof window !== "undefined" && (window as any).__TAURI__) {
+          try {
+            const { invoke } = await import("@tauri-apps/api/tauri");
+
+            // Check if user has existing settings
+            const existingSettings = await invoke("get_settings", {
+              userId: userData.id,
+            });
+
+            // If no existing settings found, save defaults
+            if (
+              !existingSettings ||
+              Object.keys(existingSettings).length === 0
+            ) {
+              console.log("New user detected, saving default settings");
+
+              const defaultSettings = {
+                filemoon_api_key: "",
+                download_directory: "", // Will be set by backend
+                delete_after_upload: "true",
+                auto_upload: "true",
+                upload_target: "filemoon",
+              };
+
+              await invoke("save_settings", {
+                userId: userData.id,
+                settings: defaultSettings,
+              });
+
+              console.log("Default settings saved for new user");
+            }
+          } catch (settingsError) {
+            console.log(
+              "Could not save default settings (likely not in Tauri environment):",
+              settingsError,
+            );
+          }
+        }
       } catch (error) {
         console.error("Login error:", error);
         setError(error instanceof Error ? error.message : "Login failed");

@@ -7,6 +7,7 @@ import {
   useState,
   useEffect,
   ReactNode,
+  Component,
 } from "react";
 
 // Auth context interface
@@ -30,13 +31,72 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
+// Error Boundary to catch popup window closed errors
+class AuthErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    // Check if this is a popup window closed error
+    if (
+      error.message &&
+      (error.message.includes("Popup window closed") ||
+        error.message.includes("popup_closed"))
+    ) {
+      console.log(
+        "AuthErrorBoundary: Caught popup window closed error, ignoring",
+      );
+      return { hasError: false }; // Don't show error UI
+    }
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, errorInfo: any) {
+    if (
+      error.message &&
+      (error.message.includes("Popup window closed") ||
+        error.message.includes("popup_closed"))
+    ) {
+      console.log("AuthErrorBoundary: Popup window closed, not logging error");
+      return;
+    }
+    console.error("AuthErrorBoundary caught an error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-center">
+            <h2 className="text-xl font-semibold text-red-600">
+              Something went wrong
+            </h2>
+            <p className="text-gray-600 mt-2">
+              Please refresh the page and try again.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 // Google OAuth provider wrapper
 export function AuthProvider({ children }: { children: ReactNode }) {
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
 
   return (
     <GoogleOAuthProvider clientId={googleClientId}>
-      <AuthContextProvider>{children}</AuthContextProvider>
+      <AuthErrorBoundary>
+        <AuthContextProvider>{children}</AuthContextProvider>
+      </AuthErrorBoundary>
     </GoogleOAuthProvider>
   );
 }
@@ -49,15 +109,58 @@ function AuthContextProvider({ children }: { children: ReactNode }) {
   >("loading");
   const [error, setError] = useState<string | null>(null);
 
+  // Global error handler for popup window closed errors
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      const errorMessage = event.error?.message || event.message || "";
+      if (
+        errorMessage.includes("Popup window closed") ||
+        errorMessage.includes("popup_closed")
+      ) {
+        console.log(
+          "Global error handler: Popup window closed detected, resetting auth state",
+        );
+        setStatus("unauthenticated");
+        setError(null);
+      }
+    };
+
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason?.message || event.reason || "";
+      if (
+        reason.toString().includes("Popup window closed") ||
+        reason.toString().includes("popup_closed")
+      ) {
+        console.log(
+          "Unhandled promise rejection: Popup window closed detected, resetting auth state",
+        );
+        setStatus("unauthenticated");
+        setError(null);
+        event.preventDefault(); // Prevent console error
+      }
+    };
+
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener(
+        "unhandledrejection",
+        handleUnhandledRejection,
+      );
+    };
+  }, []);
+
   // Initialize auth state from localStorage
   useEffect(() => {
     const savedUser = localStorage.getItem("auth_user");
     if (savedUser) {
       try {
-        const userData = JSON.parse(savedUser);
-        setUser(userData);
+        const parsedUser = JSON.parse(savedUser);
+        setUser(parsedUser);
         setStatus("authenticated");
-      } catch (e) {
+      } catch (error) {
+        console.error("Error parsing saved user:", error);
         localStorage.removeItem("auth_user");
         setStatus("unauthenticated");
       }
@@ -139,11 +242,50 @@ function AuthContextProvider({ children }: { children: ReactNode }) {
     },
     onError: (error) => {
       console.error("Google login error:", error);
-      setError("Google login failed");
+
+      // Convert error to string for checking
+      let errorString = "";
+      if (typeof error === "string") {
+        errorString = error;
+      } else if (error?.message) {
+        errorString = error.message;
+      } else if (error?.toString) {
+        errorString = error.toString();
+      } else {
+        errorString = JSON.stringify(error);
+      }
+
+      // Don't show error if popup was closed by user - check multiple variations
+      const isPopupClosed =
+        errorString.toLowerCase().includes("popup") ||
+        errorString.toLowerCase().includes("window closed") ||
+        errorString.toLowerCase().includes("user_cancelled") ||
+        errorString.toLowerCase().includes("access_denied") ||
+        errorString === "Error: Popup window closed";
+
+      if (isPopupClosed) {
+        console.log("User closed popup or cancelled, not showing error");
+        setError(null);
+      } else {
+        console.log("Actual login error occurred:", errorString);
+        setError("Google login failed");
+      }
       setStatus("unauthenticated");
     },
     onNonOAuthError: (error) => {
-      console.error("Google login non-OAuth error (popup closed?):", error);
+      // Check if this is a popup closed error
+      const errorMessage = error?.message || error?.toString() || "";
+      const isPopupClosed =
+        error?.type === "popup_closed" ||
+        errorMessage.includes("Popup window closed") ||
+        errorMessage.includes("popup_closed");
+
+      if (isPopupClosed) {
+        console.log("User closed popup, silently resetting auth state");
+      } else {
+        console.error("Google login non-OAuth error:", error);
+      }
+
       setError(null); // Don't show error for popup closed
       setStatus("unauthenticated");
     },
@@ -155,25 +297,23 @@ function AuthContextProvider({ children }: { children: ReactNode }) {
     setError(null);
     setStatus("loading");
 
-    // Start the Google login process
-    googleLogin();
+    try {
+      // Start the Google login process
+      googleLogin();
 
-    // Set a timeout to reset state if popup was closed
-    const resetTimeout = setTimeout(() => {
-      if (status === "loading") {
+      // Set a timeout to reset state if popup was closed
+      const resetTimeout = setTimeout(() => {
         console.log("Sign-in timeout reached, resetting to unauthenticated");
         setStatus("unauthenticated");
         setError(null);
-      }
-    }, 60000); // 60 second timeout
+      }, 30000); // 30 second timeout
 
-    // Clear timeout if login succeeds/fails before timeout
-    const originalOnSuccess = googleLogin.onSuccess;
-    const originalOnError = googleLogin.onError;
-
-    // We'll clear the timeout when any result occurs
-    if (resetTimeout) {
-      setTimeout(() => clearTimeout(resetTimeout), 100);
+      // Store timeout to clear it later
+      (window as any).authResetTimeout = resetTimeout;
+    } catch (error) {
+      console.log("Error in handleSignIn:", error);
+      setStatus("unauthenticated");
+      setError(null);
     }
   };
 

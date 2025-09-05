@@ -185,7 +185,7 @@ impl Database {
 
         if !rows.is_empty() {
             let status: String = rows[0].get(0);
-            let error_message = if status == "encoded" {
+            let error_message = if status == "uploaded" {
                 format!("URL \'{}\' has already been archived.", item.url)
             } else {
                 format!(
@@ -292,53 +292,8 @@ impl Database {
                 "SELECT id, url, status, message, title, filemoon_url, encoding_progress,
                         thumbnail_url, added_at, updated_at, local_path, user_id
                  FROM queue
-                 WHERE status != 'uploaded' AND user_id = $1
+                 WHERE user_id = $1
                  ORDER BY added_at DESC",
-                &[&user_id],
-            )
-            .await?;
-
-        let mut items = Vec::with_capacity(rows.len());
-        for row in rows {
-            items.push(QueueItem {
-                id: Some(row.get::<_, String>(0)),
-                url: row.get::<_, String>(1),
-                status: row.get::<_, String>(2),
-                message: row.get::<_, Option<String>>(3),
-                title: row.get::<_, Option<String>>(4),
-                filemoon_url: row.get::<_, Option<String>>(5),
-                encoding_progress: row.get::<_, Option<i32>>(6),
-                thumbnail_url: row.get::<_, Option<String>>(7),
-                added_at: Some(
-                    row.get::<_, SystemTime>(8)
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64,
-                ),
-                updated_at: Some(
-                    row.get::<_, SystemTime>(9)
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64,
-                ),
-                local_path: row.get::<_, Option<String>>(10),
-                user_id: Some(row.get::<_, String>(11)),
-            });
-        }
-
-        Ok(items)
-    }
-
-    pub async fn get_gallery_items(&self, user_id: &str) -> Result<Vec<QueueItem>> {
-        let client = self.get_client().await?;
-
-        let rows = client
-            .query(
-                "SELECT id, url, status, message, title, filemoon_url, encoding_progress,
-                        thumbnail_url, added_at, updated_at, local_path, user_id
-                 FROM queue
-                 WHERE status = 'uploaded' AND user_id = $1
-                 ORDER BY updated_at DESC",
                 &[&user_id],
             )
             .await?;
@@ -633,7 +588,7 @@ impl Database {
                 "SELECT q.id, q.filemoon_url, s.value, q.user_id
              FROM queue q
              JOIN settings s ON s.key = 'user_settings' AND s.user_id = q.user_id
-             WHERE q.status IN ('transferring', 'encoding') AND q.filemoon_url IS NOT NULL",
+             WHERE 1=0",
                 &[],
             )
             .await?;

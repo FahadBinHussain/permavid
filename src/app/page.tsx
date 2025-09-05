@@ -27,13 +27,12 @@ import {
   Bars3Icon, // All filter
   AdjustmentsHorizontalIcon, // Filter button icon
   ArrowsUpDownIcon, // Sort button icon
-  SparklesIcon, // Gallery icon
   ArrowPathRoundedSquareIcon, // For refresh button
 } from "@heroicons/react/24/solid";
 import { invoke } from "@tauri-apps/api/tauri"; // Import invoke
 import { open } from "@tauri-apps/api/shell"; // Import open for external links
 import { useTauri } from "@/app/tauri-integration"; // Corrected import path
-import { QueueItem, AppSettings } from "@/lib/tauri-api"; // <-- Import types
+import { QueueItem, AppSettings, openExternalLink } from "@/lib/tauri-api"; // <-- Import types
 import { createEmptySettings } from "@/lib/settings-helper"; // Import factory function
 import { listen } from "@tauri-apps/api/event"; // <-- Import listen
 import { toast } from "react-hot-toast";
@@ -48,19 +47,12 @@ const icons: { [key: string]: React.JSX.Element } = {
       className={iconClass + " text-blue-500 animate-pulse"}
     />
   ),
-  completed: <CheckBadgeIcon className={iconClass + " text-green-500"} />,
+  downloaded: <CheckBadgeIcon className={iconClass + " text-green-500"} />,
   uploading: (
     <ArrowUpCircleIcon
       className={iconClass + " text-purple-500 animate-pulse"}
     />
   ),
-  transferring: (
-    <WifiIcon className={iconClass + " text-sky-500 animate-pulse"} />
-  ), // Changed icon
-  encoding: (
-    <CpuChipIcon className={iconClass + " text-cyan-500 animate-spin"} />
-  ), // Changed icon
-  encoded: <CheckBadgeIcon className={iconClass + " text-indigo-500"} />, // Use CheckBadgeIcon for consistency
   failed: <ExclamationCircleIcon className={iconClass + " text-red-500"} />,
   cancelled: <NoSymbolIcon className={iconClass + " text-gray-400"} />,
   all: <Bars3Icon className={iconClass + " text-gray-500"} />,
@@ -76,7 +68,7 @@ const statusColors: {
     text: "text-blue-700",
     progress: "bg-blue-500",
   },
-  completed: {
+  downloaded: {
     bg: "bg-green-100",
     text: "text-green-700",
     progress: "bg-green-500",
@@ -85,21 +77,6 @@ const statusColors: {
     bg: "bg-purple-100",
     text: "text-purple-700",
     progress: "bg-purple-500",
-  },
-  transferring: {
-    bg: "bg-sky-100",
-    text: "text-sky-700",
-    progress: "bg-sky-500",
-  },
-  encoding: {
-    bg: "bg-cyan-100",
-    text: "text-cyan-700",
-    progress: "bg-cyan-500",
-  },
-  encoded: {
-    bg: "bg-indigo-100",
-    text: "text-indigo-700",
-    progress: "bg-indigo-500",
   },
   failed: { bg: "bg-red-100", text: "text-red-700", progress: "bg-red-500" },
   cancelled: {
@@ -130,12 +107,10 @@ interface QueueItemProps {
   item: QueueItem;
   uploadingItemId: string | null;
   cancellingItemId: string | null;
-  restartingItemId: string | null;
   retryingItemId: string | null;
   onUpload: (id: string) => void;
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
-  onRestartEncoding: (id: string) => void;
   onOpenLink: (filecode: string | null | undefined) => void;
 }
 
@@ -143,12 +118,10 @@ const QueueListItem: React.FC<QueueItemProps> = ({
   item,
   uploadingItemId,
   cancellingItemId,
-  restartingItemId,
   retryingItemId,
   onUpload,
   onCancel,
   onRetry,
-  onRestartEncoding,
   onOpenLink,
 }) => {
   // Helper function to safely call handlers with ID
@@ -255,21 +228,6 @@ const QueueListItem: React.FC<QueueItemProps> = ({
                   </span>
                 </div>
               )}
-            {item.status === "encoding" &&
-              item.encoding_progress !== null &&
-              item.encoding_progress !== undefined && (
-                <div className="flex items-center">
-                  <div className="w-full bg-gray-200 rounded-full h-1.5 dark:bg-gray-700 mr-2">
-                    <div
-                      className={`${colors.progress} h-1.5 rounded-full transition-all duration-300 ease-out`}
-                      style={{ width: `${item.encoding_progress}%` }}
-                    ></div>
-                  </div>
-                  <span
-                    className={`font-medium ${colors.text} whitespace-nowrap`}
-                  >{`${item.encoding_progress}%`}</span>
-                </div>
-              )}
             {/* Display message if not a progress message */}
             {!(
               item.status === "downloading" &&
@@ -303,7 +261,7 @@ const QueueListItem: React.FC<QueueItemProps> = ({
                 <XCircleIcon className="h-3.5 w-3.5" />,
               )}
             {/* Upload Button */}
-            {item.status === "completed" &&
+            {item.status === "downloaded" &&
               renderButton(
                 "Upload",
                 () => handleAction(onUpload),
@@ -314,10 +272,7 @@ const QueueListItem: React.FC<QueueItemProps> = ({
                 <ArrowUpTrayIcon className="h-3.5 w-3.5" />,
               )}
             {/* View Link Buttons */}
-            {(item.status === "uploaded" ||
-              item.status === "transferring" ||
-              item.status === "encoding" ||
-              item.status === "encoded") &&
+            {item.status === "uploaded" &&
               item.filemoon_url &&
               renderButton(
                 "Filemoon Link",
@@ -348,18 +303,6 @@ const QueueListItem: React.FC<QueueItemProps> = ({
                 "Retrying...",
                 <ArrowPathIcon className="h-3.5 w-3.5" />,
               )}
-            {/* Restart Encoding Button */}
-            {item.status === "failed" &&
-              item.filemoon_url &&
-              renderButton(
-                "Restart Encoding",
-                () => handleAction(onRestartEncoding),
-                "bg-orange-500",
-                "hover:bg-orange-600",
-                restartingItemId === item.id,
-                "Restarting...",
-                <ArrowPathIcon className="h-3.5 w-3.5" />,
-              )}
           </div>
         </div>
       </div>
@@ -388,9 +331,6 @@ export default function Home() {
     saveAppSettings: tauriSaveSettings,
     triggerUpload: tauriTriggerUpload,
     cancelItem: tauriCancelItem,
-    restartEncoding: tauriRestartEncoding,
-    openLink: tauriOpenLink,
-    getGalleryItems: tauriGetGalleryItems,
   } = useTauri();
 
   const [url, setUrl] = useState("");
@@ -400,7 +340,6 @@ export default function Home() {
   const [isClearing, setIsClearing] = useState(false);
   const [uploadingItemId, setUploadingItemId] = useState<string | null>(null);
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
-  const [restartingItemId, setRestartingItemId] = useState<string | null>(null);
   const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -540,17 +479,15 @@ export default function Home() {
   };
 
   const handleClearQueue = async (
-    type: "completed" | "failed" | "encoded" | "cancelled" | "all_finished",
+    type: "downloaded" | "failed" | "uploaded" | "cancelled" | "all_finished",
   ) => {
-    // Added 'encoded', 'all_finished'
     setIsClearing(true);
     setMessage("");
     setError("");
     try {
       let statusTypes: string[];
       if (type === "all_finished") {
-        // Clear completed, encoded, cancelled - essentially anything done or stopped
-        statusTypes = ["completed", "encoded", "cancelled", "failed"]; // Include failed for 'all finished'? Or separate? Let's include it.
+        statusTypes = ["downloaded", "uploaded", "cancelled", "failed"];
       } else {
         statusTypes = [type];
       }
@@ -758,32 +695,6 @@ export default function Home() {
     }
   };
 
-  const handleRestartEncoding = async (itemId: string) => {
-    setRestartingItemId(itemId);
-    setMessage("");
-    setError("");
-    try {
-      const result = await tauriRestartEncoding(itemId);
-      if (result.success) {
-        setMessage(
-          result.message || `Restart encoding request sent for item ${itemId}.`,
-        );
-      } else {
-        throw new Error(result.message || "Restart encoding failed via Tauri");
-      }
-    } catch (restartError: any) {
-      console.error(
-        `Error restarting encoding for item ${itemId} via Tauri:`,
-        restartError,
-      );
-      setError(
-        `Failed to restart encoding for item ${itemId}: ${restartError.message || String(restartError)}`,
-      );
-    } finally {
-      setRestartingItemId(null);
-    }
-  };
-
   // --- MODIFIED: Save Settings Logic ---
   const handleSaveSettings = async (settingsToSave: AppSettings) => {
     setIsSavingSettings(true);
@@ -827,7 +738,7 @@ export default function Home() {
 
     console.log(`Attempting to open link via Tauri: ${urlToOpen}`);
     try {
-      await tauriOpenLink(urlToOpen); // Use the function from context
+      await openExternalLink(urlToOpen);
     } catch (err: any) {
       console.error("Error opening link via Tauri:", err);
       setError(`Could not open link: ${err.message || String(err)}`);
@@ -1169,12 +1080,6 @@ export default function Home() {
           PermaVid
         </h1>
         <div className="flex items-center space-x-4">
-          <Link
-            href="/archives"
-            className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
-          >
-            Archives
-          </Link>
           <button
             onClick={() => setShowSettingsModal(true)}
             className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300"
@@ -1197,7 +1102,7 @@ export default function Home() {
             htmlFor="urlInput"
             className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
           >
-            Add Video URL to Archive:
+            Add Video URL to Queue:
           </label>
           <div className="flex space-x-3 mt-1">
             <input
@@ -1247,7 +1152,7 @@ export default function Home() {
           {/* Queue Header & Controls */}
           <div className="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex flex-wrap justify-between items-center gap-4">
             <h2 className="text-lg font-medium text-gray-900 dark:text-gray-100">
-              Archive Queue ({displayedQueueItems.length} item
+              Video Queue ({displayedQueueItems.length} item
               {displayedQueueItems.length !== 1 ? "s" : ""})
             </h2>
 
@@ -1307,11 +1212,9 @@ export default function Home() {
                         "all",
                         "queued",
                         "downloading",
-                        "completed",
+                        "downloaded",
                         "uploading",
-                        "transferring",
-                        "encoding",
-                        "encoded",
+                        "uploaded",
                         "failed",
                         "cancelled",
                       ] as FilterStatus[]
@@ -1434,11 +1337,13 @@ export default function Home() {
                     isOpen={showClearDropdown}
                     onClose={() => setShowClearDropdown(false)}
                   >
-                    <DropdownItem onClick={() => handleClearQueue("completed")}>
+                    <DropdownItem
+                      onClick={() => handleClearQueue("downloaded")}
+                    >
                       Clear Downloaded
                     </DropdownItem>
-                    <DropdownItem onClick={() => handleClearQueue("encoded")}>
-                      Clear Encoded
+                    <DropdownItem onClick={() => handleClearQueue("uploaded")}>
+                      Clear Uploaded
                     </DropdownItem>
                     <DropdownItem onClick={() => handleClearQueue("failed")}>
                       Clear Failed
@@ -1483,12 +1388,10 @@ export default function Home() {
                     item={item}
                     uploadingItemId={uploadingItemId}
                     cancellingItemId={cancellingItemId}
-                    restartingItemId={restartingItemId}
                     retryingItemId={retryingItemId}
                     onUpload={handleUpload}
                     onCancel={handleCancel}
                     onRetry={handleRetry}
-                    onRestartEncoding={handleRestartEncoding}
                     onOpenLink={handleOpenLink}
                   />
                 ))

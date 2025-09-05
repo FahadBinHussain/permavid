@@ -17,7 +17,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tauri::{Manager, State};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -383,7 +383,7 @@ async fn retry_item(id: String, app_state: State<'_, AppState>) -> Result<Respon
                         .db
                         .update_item_status(
                             &id,
-                            "completed",
+                            "downloaded",
                             Some("Preparing to retry upload...".to_string()),
                         )
                         .await
@@ -501,157 +501,6 @@ async fn cancel_item(id: String, app_state: State<'_, AppState>) -> Result<Respo
 }
 
 #[tauri::command]
-async fn restart_encoding(
-    id: String,
-    user_id: String,
-    app_state: State<'_, AppState>,
-) -> Result<Response<()>, String> {
-    let filecode: String;
-    let api_key: String;
-    let item_id_clone = id.clone(); // Clone id for potential use after drop
-
-    // Get data from DB
-    let item = match app_state.db.get_item_by_id(&id).await {
-        Ok(Some(i)) => i,
-        Ok(None) => return Err(format!("Restart encoding failed: Item {} not found.", id)),
-        Err(e) => return Err(format!("DB Error getting item for restart: {}", e)),
-    };
-
-    filecode = match item.filemoon_url {
-        Some(fc) if !fc.is_empty() => fc,
-        _ => {
-            return Err(format!(
-                "Restart encoding failed: Filemoon filecode not found for item."
-            ))
-        }
-    };
-
-    let settings = match app_state.db.get_settings(&user_id).await {
-        Ok(s) => s,
-        Err(e) => return Err(format!("Failed to get settings for restart: {}", e)),
-    };
-
-    api_key = match settings.filemoon_api_key {
-        Some(key) if !key.is_empty() => key,
-        _ => return Err("Restart encoding failed: Filemoon API key not configured".to_string()),
-    };
-
-    // Perform HTTP request
-    println!("Attempting to restart encoding for filecode: {}", filecode);
-    let client = reqwest::Client::new();
-    let params = [("key", &api_key), ("file_code", &filecode)];
-
-    match client
-        .post("https://api.filemoon.sx/api/upload/restart")
-        .form(&params)
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            match response.json::<FilemoonRestartResponse>().await {
-                Ok(resp_body) => {
-                    if status.is_success() && resp_body.status == 200 {
-                        println!(
-                            "Filemoon restart encoding request successful for {}",
-                            filecode
-                        );
-                        // Update status
-                        if let Err(e) = app_state
-                            .db
-                            .update_item_status(
-                                &item_id_clone,
-                                "encoding",
-                                Some("Restarted encoding".to_string()),
-                            )
-                            .await
-                        {
-                            eprintln!("Error updating status after restart: {}", e);
-                        }
-
-                        Ok(Response {
-                            success: true,
-                            message: format!(
-                                "Successfully requested encoding restart for filecode {}",
-                                filecode
-                            ),
-                            data: None,
-                        })
-                    } else {
-                        let err_msg = format!(
-                            "Filemoon restart API Error (Status {}): {}",
-                            resp_body.status, resp_body.msg
-                        );
-                        println!("{}", err_msg);
-                        // Update status to failed
-                        if let Err(e) = app_state
-                            .db
-                            .update_item_status(&item_id_clone, "failed", Some(err_msg.clone()))
-                            .await
-                        {
-                            eprintln!("Error updating status to failed: {}", e);
-                        }
-
-                        Err(err_msg)
-                    }
-                }
-                Err(e) => {
-                    let err_msg = format!("Failed to parse Filemoon restart response: {}", e);
-                    println!("{}", err_msg);
-                    // Update status to failed on parse error
-                    if let Err(db_e) = app_state
-                        .db
-                        .update_item_status(
-                            &item_id_clone,
-                            "failed",
-                            Some(format!("Parse Error: {}", e)),
-                        )
-                        .await
-                    {
-                        eprintln!("Error updating status on parse error: {}", db_e);
-                    }
-
-                    Err(err_msg)
-                }
-            }
-        }
-        Err(e) => {
-            let err_msg = format!("Filemoon restart request failed: {}", e);
-            println!("{}", err_msg);
-            // Update status to failed on request error
-            if let Err(db_e) = app_state
-                .db
-                .update_item_status(
-                    &item_id_clone,
-                    "failed",
-                    Some(format!("Request Error: {}", e)),
-                )
-                .await
-            {
-                eprintln!("Error updating status on request error: {}", db_e);
-            }
-
-            Err(err_msg)
-        }
-    }
-}
-
-#[tauri::command]
-async fn get_gallery_items(
-    user_id: String,
-    app_state: State<'_, AppState>,
-) -> Result<Response<Vec<QueueItem>>, String> {
-    match app_state.db.get_gallery_items(&user_id).await {
-        Ok(items) => Ok(Response {
-            success: true,
-            message: "Gallery items retrieved successfully".to_string(),
-            data: Some(items),
-        }),
-        Err(e) => Err(format!("Database error getting gallery items: {}", e)),
-    }
-}
-
-#[tauri::command]
 async fn debug_check_status(filecode: String, api_key: String) -> Result<Response<String>, String> {
     println!("=== MANUAL FILEMOON STATUS CHECK ===");
     println!("Checking filecode: {}", filecode);
@@ -716,10 +565,10 @@ async fn trigger_upload(
         Err(e) => return Err(format!("Failed to retrieve settings: {}", e)),
     };
 
-    // Updated to allow both 'completed' and 'encoded' status for upload
-    if item.status != "completed" && item.status != "encoded" {
+    // Only allow downloaded status for upload
+    if item.status != "downloaded" {
         return Err(format!(
-            "Item {} is not in a completed or encoded state (status: {}). Cannot upload.",
+            "Item {} is not in a downloaded state (status: {}). Cannot upload.",
             id, item.status
         ));
     }
@@ -925,11 +774,8 @@ async fn trigger_upload(
                                     .db
                                     .update_item_status(
                                         &item_id_clone,
-                                        "transferring",
-                                        Some(format!(
-                                            "Filemoon: {}. Awaiting encoding...",
-                                            filecode
-                                        )),
+                                        "uploaded",
+                                        Some(format!("Uploaded to Filemoon: {}", filecode)),
                                     )
                                     .await
                                 {
@@ -1034,10 +880,7 @@ async fn trigger_upload(
         }
         Ok(Response {
             success: true,
-            message: format!(
-                "Upload to Filemoon successful (Filecode: {}). Awaiting encoding.",
-                filecode
-            ),
+            message: format!("Upload to Filemoon successful (Filecode: {})", filecode),
             data: Some(item_id_clone),
         })
     } else {
@@ -1098,53 +941,15 @@ async fn check_filemoon_status(
                                         message.push_str(&format!(" ({}%)", p));
                                     }
 
-                                    let new_db_status = match api_status.as_str() {
-                                        "ENCODING" => "encoding",
-                                        "PENDING" => "encoding",
-                                        "FINISHED" => "encoded",
-                                        "ACTIVE" => "encoded",
-                                        "READY" => "encoded",
-                                        "COMPLETED" => "encoded",
-                                        "ERROR" => "failed",
-                                        "FAILED" => "failed",
-                                        _ => {
-                                            println!("Unknown Filemoon status '{}' for item {}, keeping as transferring", api_status, item_id);
-                                            "transferring"
-                                        }
-                                    };
+                                    // Simplified status system - all uploaded files are considered uploaded
+                                    println!(
+                                        "Item {} already uploaded, ignoring encoding status",
+                                        item_id
+                                    );
 
-                                    println!("Item {} Filemoon Status Update: DB={}, API={}, Progress={:?}", item_id, new_db_status, api_status, progress);
-
-                                    // Always update DB with the status from encoding/status endpoint
-                                    let state = app_handle.state::<AppState>();
-                                    if let Err(e) = state
-                                        .db
-                                        .update_item_encoding_details(
-                                            item_id,
-                                            new_db_status,
-                                            progress,
-                                            Some(message),
-                                        )
-                                        .await
-                                    {
-                                        eprintln!("Error updating encoding details: {}", e);
-                                    }
+                                    // No status updates needed in simplified system
                                 } else {
-                                    println!("Item {} - API returned empty/null result, file no longer in encoding queue - marking as encoded", item_id);
-                                    // When file is no longer in encoding queue, it means encoding is complete
-                                    let state = app_handle.state::<AppState>();
-                                    if let Err(e) = state
-                                        .db
-                                        .update_item_encoding_details(
-                                            item_id,
-                                            "encoded",
-                                            Some(100),
-                                            Some("Encoding complete - file ready".to_string()),
-                                        )
-                                        .await
-                                    {
-                                        eprintln!("Error updating encoding details: {}", e);
-                                    }
+                                    println!("Item {} - API returned empty/null result, file already uploaded", item_id);
                                 }
                             } else {
                                 eprintln!("Item {} Filemoon Status API Error (HTTP {}, API Status {}): {}. Full response: {:?}", item_id, status, resp_body.status, resp_body.msg, resp_body);
@@ -1309,60 +1114,10 @@ async fn check_filemoon_readiness(
     app_handle: &tauri::AppHandle,
 ) {
     println!(
-        "Checking Filemoon readiness for item {}, filecode: {}",
+        "Checking Filemoon readiness for item {}, filecode: {} - Simplified: already uploaded",
         item_id, filecode
     );
-
-    // 1. Check encoding/status first (authoritative for encoding state)
-    println!("Checking encoding/status for item {}", item_id);
-    check_filemoon_status(item_id, filecode, api_key, app_handle).await;
-
-    // 2. Get current status after encoding check to decide if we need file/info check
-    let state = app_handle.state::<AppState>();
-    match state.db.get_item_by_id(item_id).await {
-        Ok(Some(item)) if item.status == "encoded" => {
-            // Only if encoding status confirmed it's encoded, then verify with file/info
-            println!(
-                "Encoding status shows encoded for item {}, verifying with file/info",
-                item_id
-            );
-            match check_filemoon_file_info(item_id, filecode, api_key, app_handle).await {
-                Ok(true) => println!("Item {} confirmed ready via file/info", item_id),
-                Ok(false) => {
-                    // File/info says not ready, revert to encoding status
-                    println!(
-                        "Item {} file/info says not ready, reverting to encoding status",
-                        item_id
-                    );
-                    if let Err(e) = state
-                        .db
-                        .update_item_encoding_details(
-                            item_id,
-                            "encoding",
-                            None,
-                            Some("File not yet playable".to_string()),
-                        )
-                        .await
-                    {
-                        eprintln!("Error reverting status to encoding: {}", e);
-                    }
-                }
-                Err(e) => println!("File/info check failed for {}: {}", item_id, e),
-            }
-        }
-        Ok(Some(item)) => {
-            println!(
-                "Item {} has status '{}', skipping file/info check",
-                item_id, item.status
-            );
-        }
-        Ok(None) => {
-            eprintln!("Item {} not found after encoding status check", item_id);
-        }
-        Err(e) => {
-            eprintln!("Error getting item {} status: {}", item_id, e);
-        }
-    }
+    // No more encoding status checks - file is already marked as uploaded
 }
 // --- END ADDED ---
 
@@ -1866,7 +1621,7 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         .db
                         .update_item_after_download(
                             &item_id,
-                            "completed",
+                            "downloaded",
                             video_title.clone(), // Clone needed for potential event emission
                             actual_video_path.clone(), // Clone needed for potential event emission
                             thumbnail_url.clone(), // Clone needed for potential event emission
@@ -1962,29 +1717,8 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
         } else {
             // Check status of transferring/encoding items if no new item to process
             let app_state: State<'_, AppState> = app_handle.state();
-            let items_to_check = match app_state.db.get_items_for_status_check().await {
-                Ok(items) => items,
-                Err(e) => {
-                    eprintln!("DB Error fetching items for status check: {}", e);
-                    Vec::new() // Empty vec on error
-                }
-            };
-
-            if !items_to_check.is_empty() {
-                should_sleep_long = false; // Found items to check, don't sleep long
-                for (item_id, filecode, api_key) in items_to_check {
-                    // Spawn a task for each status check
-                    let handle_clone = app_handle.clone();
-                    tokio::spawn(async move {
-                        // Call the new orchestrator function
-                        check_filemoon_readiness(&item_id, &filecode, &api_key, &handle_clone)
-                            .await;
-                    });
-                }
-            } else {
-                // No new items AND no items to check status for, sleep long
-                should_sleep_long = true;
-            }
+            // No more status checking needed - files are simply uploaded
+            should_sleep_long = true;
         }
 
         // Sleep before next check
@@ -2016,8 +1750,6 @@ async fn main() {
             retry_item,
             trigger_upload,
             cancel_item,
-            restart_encoding,
-            get_gallery_items,
             debug_check_status
         ])
         .setup(|app| {

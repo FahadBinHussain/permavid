@@ -26,8 +26,6 @@ import {
   retryItem,
   triggerUpload,
   cancelItem,
-  restartEncoding,
-  getGalleryItems,
 } from "@/lib/tauri-api";
 import { createEmptySettings } from "@/lib/settings-helper";
 import { fetch as tauriFetch, Body } from "@tauri-apps/api/http"; // Import Tauri fetch AND Body
@@ -54,11 +52,6 @@ interface TauriContextType {
   restartEncoding: (
     id: string,
   ) => Promise<{ success: boolean; message: string }>;
-  getGalleryItems: () => Promise<{
-    success: boolean;
-    message: string;
-    data?: QueueItem[];
-  }>;
   contributeIdentifier: (
     url: string,
   ) => Promise<{ success: boolean; error?: string }>;
@@ -88,11 +81,6 @@ const TauriContext = createContext<TauriContextType>({
   restartEncoding: async () => ({
     success: false,
     message: "Provider not ready",
-  }),
-  getGalleryItems: async () => ({
-    success: false,
-    message: "Provider not ready",
-    data: [],
   }),
   contributeIdentifier: async () => ({
     success: false,
@@ -401,11 +389,6 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     [fetchQueueItems],
   );
 
-  const handleGetGalleryItems = useCallback(async () => {
-    const result = await getGalleryItems();
-    return result;
-  }, []);
-
   const memoizedContributeIdentifier = useCallback(
     async (url: string) => {
       if (!isTauriEnvironment)
@@ -434,7 +417,6 @@ export function TauriProvider({ children }: { children: ReactNode }) {
       triggerUpload: handleTriggerUpload,
       cancelItem: handleCancelItem,
       restartEncoding: handleRestartEncoding,
-      getGalleryItems: handleGetGalleryItems,
       contributeIdentifier: memoizedContributeIdentifier,
     }),
     [
@@ -455,7 +437,6 @@ export function TauriProvider({ children }: { children: ReactNode }) {
       handleTriggerUpload,
       handleCancelItem,
       handleRestartEncoding,
-      handleGetGalleryItems,
       memoizedContributeIdentifier,
     ],
   );

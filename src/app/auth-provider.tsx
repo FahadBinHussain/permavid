@@ -170,9 +170,16 @@ function AuthContextProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const googleLogin = useGoogleLogin({
-    flow: "auth-code",
     onSuccess: async (tokenResponse) => {
       try {
+        console.log("Token response received:", tokenResponse);
+
+        // Check if we have an access token
+        if (!tokenResponse.access_token) {
+          console.error("No access token in response:", tokenResponse);
+          throw new Error("No access token received from Google");
+        }
+
         // Get user info from Google
         const userInfoResponse = await fetch(
           "https://www.googleapis.com/oauth2/v3/userinfo",
@@ -184,7 +191,15 @@ function AuthContextProvider({ children }: { children: ReactNode }) {
         );
 
         if (!userInfoResponse.ok) {
-          throw new Error("Failed to get user info");
+          const errorText = await userInfoResponse.text();
+          console.error(
+            "User info fetch failed:",
+            userInfoResponse.status,
+            errorText,
+          );
+          throw new Error(
+            `Failed to get user info: ${userInfoResponse.status}`,
+          );
         }
 
         const userInfo = await userInfoResponse.json();

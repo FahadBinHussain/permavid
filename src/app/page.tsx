@@ -186,7 +186,7 @@ const QueueListItem: React.FC<QueueItemProps> = ({
           {/* Top row: Title and Status Badge */}
           <div className="flex items-center justify-between space-x-3 mb-1">
             <p
-              className="text-sm font-semibold text-gray-900 truncate flex-1 min-w-0"
+              className="text-sm font-semibold text-gray-900 flex-1 min-w-0 break-words"
               title={item.title || item.url}
             >
               {item.title || item.url}
@@ -201,7 +201,7 @@ const QueueListItem: React.FC<QueueItemProps> = ({
 
           {/* Second row: URL */}
           {item.title && (
-            <p className="text-xs text-gray-500 truncate block mb-1">
+            <p className="text-xs text-gray-500 block mb-1 break-all">
               {item.url}
             </p>
           )}
@@ -237,7 +237,7 @@ const QueueListItem: React.FC<QueueItemProps> = ({
                 item.status === "encoding" && item.encoding_progress !== null
               ) &&
               item.message && (
-                <p className="italic text-gray-500 truncate block">
+                <p className="italic text-gray-500 block break-words">
                   - {item.message}
                 </p>
               )}

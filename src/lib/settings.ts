@@ -169,9 +169,9 @@ export async function getAppSettings(): Promise<AppSettings> {
   return {
     filemoon_api_key: "",
     download_directory: defaultDownloadDir,
-    delete_after_upload: "false",
-    auto_upload: "false",
-    upload_target: "none",
+    delete_after_upload: "true",
+    auto_upload: "true",
+    upload_target: "filemoon",
     ...userSettings,
   };
 }

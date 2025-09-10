@@ -7,7 +7,7 @@ mod db;
 // Explicitly use the Database struct
 use crate::db::Database;
 
-use db::{AppSettings, QueueItem};
+use db::{AppSettings, ClearResult, QueueItem};
 use lazy_static::lazy_static;
 use regex::Regex;
 use reqwest;
@@ -253,16 +253,19 @@ async fn clear_completed_items(
     status_types: Vec<String>,
     user_id: String,
     app_state: State<'_, AppState>,
-) -> Result<Response<()>, String> {
+) -> Result<Response<ClearResult>, String> {
     match app_state
         .db
         .clear_items_by_status(&status_types, &user_id)
         .await
     {
-        Ok(_) => Ok(Response {
+        Ok(result) => Ok(Response {
             success: true,
-            message: "Items cleared successfully".to_string(),
-            data: None,
+            message: format!(
+                "Cleared {} items with status types: {:?}",
+                result.total_deleted, status_types
+            ),
+            data: Some(result),
         }),
         Err(e) => Err(e.to_string()),
     }

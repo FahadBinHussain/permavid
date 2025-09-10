@@ -348,7 +348,6 @@ export default function Home() {
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [missingApiKey, setMissingApiKey] = useState(false); // Track if modal opened due to missing API key
 
-  const [showClearDropdown, setShowClearDropdown] = useState(false);
   type FilterStatus = QueueItem["status"] | "all";
   type SortKey =
     | "added_at_desc"
@@ -364,11 +363,10 @@ export default function Home() {
   // Refs for dropdown handling
   const filterButtonRef = React.useRef<HTMLButtonElement>(null);
   const sortButtonRef = React.useRef<HTMLButtonElement>(null);
-  const clearButtonRef = React.useRef<HTMLButtonElement>(null);
 
   // Handle clicks outside of dropdowns to close them
   useEffect(() => {
-    if (!showFilterDropdown && !showSortDropdown && !showClearDropdown) return;
+    if (!showFilterDropdown && !showSortDropdown) return;
 
     const handleClickOutside = (e: MouseEvent) => {
       // Check if click was inside any of the active dropdowns or their toggle buttons
@@ -385,19 +383,13 @@ export default function Home() {
       if (showSortDropdown && !isSortDropdownClick) {
         setShowSortDropdown(false);
       }
-
-      // Handle Clear dropdown
-      const isClearDropdownClick = clearButtonRef.current?.contains(target);
-      if (showClearDropdown && !isClearDropdownClick) {
-        setShowClearDropdown(false);
-      }
     };
 
     document.addEventListener("mousedown", handleClickOutside);
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
-  }, [showFilterDropdown, showSortDropdown, showClearDropdown]);
+  }, [showFilterDropdown, showSortDropdown]);
 
   const fetchQueue = useCallback(async () => {
     try {
@@ -478,30 +470,37 @@ export default function Home() {
     }
   };
 
-  const handleClearQueue = async (
-    type: "downloaded" | "failed" | "uploaded" | "cancelled" | "all_finished",
-  ) => {
+  const handleClearQueue = async (type: "cancelled") => {
+    console.log(`[DEBUG] handleClearQueue called with type: ${type}`);
     setIsClearing(true);
     setMessage("");
     setError("");
     try {
-      let statusTypes: string[];
-      if (type === "all_finished") {
-        statusTypes = ["downloaded", "uploaded", "cancelled", "failed"];
-      } else {
-        statusTypes = [type];
-      }
+      const statusTypes = [type];
 
+      console.log(
+        `[DEBUG] About to clear items with statusTypes:`,
+        statusTypes,
+      );
       await tauriClearItems(statusTypes);
+      console.log(`[DEBUG] tauriClearItems completed, refreshing queue...`);
 
       // Force refresh the queue items after clearing
       await fetchQueue();
+      console.log(`[DEBUG] fetchQueue completed`);
 
       setMessage(`Successfully cleared ${type.replace("_", " ")} items.`);
-      setShowClearDropdown(false); // Close dropdown after action
+      console.log(`[DEBUG] handleClearQueue completed successfully`);
     } catch (clearError: any) {
-      console.error(`Error clearing ${type} items via Tauri:`, clearError);
-      setError(`Failed to clear ${type} items: ${clearError.message}`);
+      console.error(
+        `[ERROR] Error clearing ${type} items via Tauri:`,
+        clearError,
+      );
+      const errorMessage =
+        clearError?.message || clearError?.toString() || "Unknown error";
+      setError(`Failed to clear ${type} items: ${errorMessage}`);
+      // Also show alert for immediate feedback during debugging
+      alert(`Clear ${type} failed: ${errorMessage}`);
     } finally {
       setIsClearing(false);
     }
@@ -1188,7 +1187,6 @@ export default function Home() {
                   onClick={() => {
                     setShowFilterDropdown(!showFilterDropdown);
                     setShowSortDropdown(false);
-                    setShowClearDropdown(false);
                   }}
                   className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center space-x-1"
                 >
@@ -1249,7 +1247,6 @@ export default function Home() {
                   onClick={() => {
                     setShowSortDropdown(!showSortDropdown);
                     setShowFilterDropdown(false);
-                    setShowClearDropdown(false);
                   }}
                   className="px-3 py-1.5 text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors flex items-center space-x-1"
                 >
@@ -1312,56 +1309,15 @@ export default function Home() {
                 )}
               </div>
 
-              {/* Clear Dropdown - completely rebuilt with proper positioning */}
-              <div
-                className="relative inline-block"
-                style={{ position: "relative" }}
+              {/* Clear Cancelled Button */}
+              <button
+                onClick={() => handleClearQueue("cancelled")}
+                disabled={isClearing}
+                className="px-3 py-1.5 text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 transition-colors flex items-center space-x-1"
               >
-                <button
-                  ref={clearButtonRef}
-                  onClick={() => {
-                    setShowClearDropdown(!showClearDropdown);
-                    setShowFilterDropdown(false);
-                    setShowSortDropdown(false);
-                  }}
-                  disabled={isClearing}
-                  className="px-3 py-1.5 text-xs font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 transition-colors flex items-center space-x-1"
-                >
-                  <TrashIcon className="h-4 w-4" />
-                  <span>Clear</span>
-                  <ChevronDownIcon className="h-3 w-3 ml-1" />
-                </button>
-
-                {showClearDropdown && (
-                  <DropdownMenu
-                    isOpen={showClearDropdown}
-                    onClose={() => setShowClearDropdown(false)}
-                  >
-                    <DropdownItem
-                      onClick={() => handleClearQueue("downloaded")}
-                    >
-                      Clear Downloaded
-                    </DropdownItem>
-                    <DropdownItem onClick={() => handleClearQueue("uploaded")}>
-                      Clear Uploaded
-                    </DropdownItem>
-                    <DropdownItem onClick={() => handleClearQueue("failed")}>
-                      Clear Failed
-                    </DropdownItem>
-                    <DropdownItem onClick={() => handleClearQueue("cancelled")}>
-                      Clear Cancelled
-                    </DropdownItem>
-                    <div className="border-t border-gray-200 dark:border-gray-600 my-1"></div>
-                    <DropdownItem
-                      onClick={() => handleClearQueue("all_finished")}
-                    >
-                      <span className="text-red-600 font-medium">
-                        Clear All Finished
-                      </span>
-                    </DropdownItem>
-                  </DropdownMenu>
-                )}
-              </div>
+                <TrashIcon className="h-4 w-4" />
+                <span>Clear Cancelled</span>
+              </button>
             </div>
           </div>
 

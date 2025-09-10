@@ -38,16 +38,42 @@ function getCurrentUserIdClient(): string {
   if (typeof window !== "undefined") {
     try {
       const savedUser = localStorage.getItem("auth_user");
+      console.log(
+        "[DEBUG] getCurrentUserIdClient - savedUser from localStorage:",
+        savedUser,
+      );
       if (savedUser) {
         const userData = JSON.parse(savedUser);
+        console.log(
+          "[DEBUG] getCurrentUserIdClient - parsed userData:",
+          userData,
+        );
+        console.log(
+          "[DEBUG] getCurrentUserIdClient - returning user ID:",
+          userData.id,
+        );
+        if (!userData.id) {
+          console.warn(
+            "[WARNING] User data exists but no ID found, using fallback",
+          );
+          return "local-user";
+        }
         return userData.id;
+      } else {
+        console.log(
+          "[DEBUG] getCurrentUserIdClient - no saved user found, using fallback",
+        );
       }
     } catch (error) {
       console.error("Error getting user from localStorage:", error);
     }
+  } else {
+    console.log(
+      "[DEBUG] getCurrentUserIdClient - not in browser environment, using fallback",
+    );
   }
-
-  // Fallback to local user ID
+  // Fallback to a default user ID if no user is found
+  console.log("[DEBUG] getCurrentUserIdClient - returning fallback user ID");
   return "local-user";
 }
 
@@ -122,9 +148,39 @@ export async function clearCompletedItems(statusTypes: string[]) {
       JSON.stringify(statusTypes),
     );
     const userId = getCurrentUserIdClient();
-    await invoke("clear_completed_items", { statusTypes, userId });
+    console.log("[Tauri API] Using userId:", userId);
+
+    console.log("[Tauri API] About to invoke clear_completed_items...");
+    const response: any = await invoke("clear_completed_items", {
+      statusTypes,
+      userId,
+    });
+    console.log("[Tauri API] clear_completed_items response:", response);
+
+    // Log detailed information from the response
+    if (response && response.success && response.data) {
+      console.log(
+        `[Tauri API] Successfully deleted ${response.data.total_deleted} items`,
+      );
+      console.log(
+        `[Tauri API] Status types cleared:`,
+        response.data.status_types,
+      );
+      console.log(`[Tauri API] User ID:`, response.data.user_id);
+    } else if (response && !response.success) {
+      console.warn(
+        "[Tauri API] Clear operation was not successful:",
+        response.message,
+      );
+    }
+
+    return response;
   } catch (error) {
-    console.error("Error clearing completed items via Tauri:", error);
+    console.error("[ERROR] Error clearing completed items via Tauri:", error);
+    console.error("[ERROR] Error details:", {
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
     throw error;
   }
 }

@@ -298,8 +298,18 @@ export function TauriProvider({ children }: { children: ReactNode }) {
 
   const clearItems = useCallback(
     async (statusTypes: string[]) => {
-      await clearCompletedItems(statusTypes);
-      await fetchQueueItems();
+      console.log("[DEBUG] clearItems called with statusTypes:", statusTypes);
+
+      try {
+        await clearCompletedItems(statusTypes);
+        console.log("[DEBUG] clearCompletedItems completed, fetching queue...");
+
+        await fetchQueueItems();
+        console.log("[DEBUG] Queue items refreshed");
+      } catch (error) {
+        console.error("[ERROR] clearItems failed:", error);
+        throw error; // Re-throw so the calling code can handle it
+      }
     },
     [fetchQueueItems],
   );

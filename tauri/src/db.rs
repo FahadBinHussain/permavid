@@ -15,6 +15,13 @@ use std::time::SystemTime;
 use tauri::AppHandle;
 use uuid::Uuid;
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClearResult {
+    pub total_deleted: u64,
+    pub status_types: Vec<String>,
+    pub user_id: String,
+}
+
 // Shared database connection pool
 pub struct Database {
     pool: Arc<Pool>,
@@ -655,24 +662,65 @@ impl Database {
         &self,
         status_types: &[String],
         user_id: &str,
-    ) -> Result<()> {
+    ) -> Result<ClearResult> {
         if status_types.is_empty() {
-            return Ok(());
+            println!("[DEBUG] clear_items_by_status: No status types provided");
+            return Ok(ClearResult {
+                total_deleted: 0,
+                status_types: vec![],
+                user_id: user_id.to_string(),
+            });
         }
+
+        println!(
+            "[DEBUG] clear_items_by_status called with status_types: {:?}, user_id: {}",
+            status_types, user_id
+        );
 
         let client = self.get_client().await?;
 
-        // Delete items for each status type individually
+        // First, count items before deletion for debugging
         for status in status_types {
-            client
+            let count_result = client
+                .query(
+                    "SELECT COUNT(*) FROM queue WHERE status = $1 AND user_id = $2",
+                    &[&status.as_str(), &user_id],
+                )
+                .await?;
+
+            let count: i64 = count_result[0].get(0);
+            println!(
+                "[DEBUG] Found {} items with status '{}' for user '{}'",
+                count, status, user_id
+            );
+        }
+
+        // Delete items for each status type individually
+        let mut total_deleted = 0;
+        for status in status_types {
+            let result = client
                 .execute(
                     "DELETE FROM queue WHERE status = $1 AND user_id = $2",
                     &[&status.as_str(), &user_id],
                 )
                 .await?;
+
+            println!(
+                "[DEBUG] Deleted {} items with status '{}' for user '{}'",
+                result, status, user_id
+            );
+            total_deleted += result;
         }
 
-        Ok(())
+        println!(
+            "[DEBUG] clear_items_by_status completed. Total deleted: {}",
+            total_deleted
+        );
+        Ok(ClearResult {
+            total_deleted,
+            status_types: status_types.to_vec(),
+            user_id: user_id.to_string(),
+        })
     }
 
     // Method for manual import from a specific path - called via Tauri command

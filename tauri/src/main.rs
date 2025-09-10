@@ -1281,7 +1281,19 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                 cmd.arg("--newline"); // Ensure progress updates are on new lines
                 cmd.arg("--no-warnings"); // Reduce noise in output
                 cmd.arg("-v"); // Add verbose flag for detailed debugging output
-                               // Consider adding --format bestvideo+bestaudio/best if needed
+                               // Robust download parameters for large videos
+                cmd.arg("--fragment-retries").arg("10"); // Retry fragments up to 10 times
+                cmd.arg("--retries").arg("5"); // Retry the whole download up to 5 times
+                cmd.arg("--file-access-retries").arg("10"); // Retry file access operations
+                cmd.arg("--continue"); // Continue partial downloads
+                cmd.arg("--no-part"); // Don't use .part files (can cause issues on some systems)
+                cmd.arg("--concurrent-fragments").arg("3"); // Download 3 fragments concurrently
+                cmd.arg("--throttled-rate").arg("100K"); // Minimum rate before considering throttled
+                cmd.arg("--sleep-requests").arg("1"); // Sleep 1 second between requests
+                cmd.arg("--sleep-interval").arg("5"); // Sleep 5 seconds before each download
+                cmd.arg("--max-sleep-interval").arg("30"); // Maximum sleep interval of 30 seconds
+                cmd.arg("--socket-timeout").arg("30"); // 30 second socket timeout
+                cmd.arg("--extractor-retries").arg("3"); // Retry extractor operations
 
                 cmd.stdout(Stdio::piped()); // Capture standard output
                 cmd.stderr(Stdio::piped()); // Capture standard error

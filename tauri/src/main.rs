@@ -16,6 +16,7 @@ use serde_json::Value as JsonValue;
 use std::fs;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tauri::{Manager, State};
@@ -1300,9 +1301,18 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                         let item_id_clone_stdout = item_id.clone();
                         let app_handle_clone_stdout = app_handle.clone();
 
+                        // Create a shared flag to stop progress updates when download completes
+                        let progress_stop_flag = Arc::new(AtomicBool::new(false));
+                        let progress_stop_flag_clone = progress_stop_flag.clone();
+
                         // Spawn task to read stdout and parse progress
-                        tokio::spawn(async move {
+                        let progress_task = tokio::spawn(async move {
                             while let Ok(Some(line)) = stdout_reader.next_line().await {
+                                // Check if we should stop updating progress
+                                if progress_stop_flag_clone.load(Ordering::Relaxed) {
+                                    break;
+                                }
+
                                 // Check for progress
                                 if let Some(caps) = YTDLP_PROGRESS_REGEX.captures(&line) {
                                     if let Some(percent_match) = caps.get(1) {
@@ -1346,6 +1356,12 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
 
                         match child.wait().await {
                             Ok(status) => {
+                                // Stop progress updates immediately when process completes
+                                progress_stop_flag.store(true, Ordering::Relaxed);
+
+                                // Wait a bit for progress task to stop
+                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
                                 if status.success() {
                                     println!(
                                         "yt-dlp process finished successfully for item: {}",
@@ -1380,6 +1396,9 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                 }
                             }
                             Err(e) => {
+                                // Stop progress updates immediately when process fails
+                                progress_stop_flag.store(true, Ordering::Relaxed);
+
                                 let err_msg = format!("Failed to wait for yt-dlp process: {}", e);
                                 eprintln!("Error for item {}: {}", item_id, err_msg);
                                 // Update DB status

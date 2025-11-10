@@ -90,7 +90,18 @@ export async function getQueueItems() {
       return (response as any).data || [];
     }
     return [];
-  } catch (error) {
+  } catch (error: any) {
+    // Handle Tauri connection errors gracefully (e.g., when running in web mode)
+    const errorString = String(error);
+    if (
+      errorString.includes("connection closed") ||
+      errorString.includes("not available") ||
+      errorString.includes("__TAURI_INVOKE__")
+    ) {
+      // Silently return empty array when Tauri isn't available
+      return [];
+    }
+    // Log other unexpected errors
     console.error("Error fetching queue from Tauri:", error);
     return [];
   }
@@ -207,8 +218,19 @@ export async function getSettings(userId?: string) {
 
     console.warn("Unexpected response format from get_settings:", response);
     return {};
-  } catch (error) {
-    // More detailed error logging
+  } catch (error: any) {
+    // Handle Tauri connection errors gracefully
+    const errorString = String(error);
+    if (
+      errorString.includes("connection closed") ||
+      errorString.includes("not available") ||
+      errorString.includes("__TAURI_INVOKE__")
+    ) {
+      // Silently return empty object when Tauri isn't available
+      return {};
+    }
+
+    // More detailed error logging for other errors
     console.error("Error fetching settings from Tauri:", error);
 
     // Return an empty object instead of throwing

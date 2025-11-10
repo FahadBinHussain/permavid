@@ -396,10 +396,19 @@ export default function Home() {
       setIsRefreshing(true);
       await tauriFetchQueueItems();
     } catch (fetchError: any) {
-      console.error(
-        "Home: Error fetching queue via Tauri context:",
-        fetchError,
-      );
+      // Handle Tauri connection errors gracefully
+      const errorString = String(fetchError);
+      if (
+        !errorString.includes("connection closed") &&
+        !errorString.includes("not available") &&
+        !errorString.includes("__TAURI_INVOKE__")
+      ) {
+        // Only log non-connection errors
+        console.error(
+          "Home: Error fetching queue via Tauri context:",
+          fetchError,
+        );
+      }
     } finally {
       setIsRefreshing(false);
     }
@@ -409,11 +418,20 @@ export default function Home() {
     try {
       await tauriGetAppSettings();
     } catch (fetchError: any) {
-      console.error(
-        "Home: Error fetching settings via Tauri context:",
-        fetchError,
-      );
-      setError("Failed to load application settings. Using defaults.");
+      // Handle Tauri connection errors gracefully
+      const errorString = String(fetchError);
+      if (
+        !errorString.includes("connection closed") &&
+        !errorString.includes("not available") &&
+        !errorString.includes("__TAURI_INVOKE__")
+      ) {
+        // Only log and show errors for non-connection issues
+        console.error(
+          "Home: Error fetching settings via Tauri context:",
+          fetchError,
+        );
+        setError("Failed to load application settings. Using defaults.");
+      }
     }
   }, [tauriGetAppSettings]);
 

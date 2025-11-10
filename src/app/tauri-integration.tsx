@@ -160,8 +160,19 @@ export function TauriProvider({ children }: { children: ReactNode }) {
     try {
       const items = await getQueueItems();
       setQueueItems(items);
-    } catch (err) {
-      console.error("Error fetching queue items:", err);
+    } catch (err: any) {
+      // Handle Tauri connection errors gracefully
+      const errorString = String(err);
+      if (
+        !errorString.includes("connection closed") &&
+        !errorString.includes("not available") &&
+        !errorString.includes("__TAURI_INVOKE__")
+      ) {
+        // Only log non-connection errors
+        console.error("Error fetching queue items:", err);
+      }
+      // Set empty array on error to prevent UI issues
+      setQueueItems([]);
     }
   }, []);
 

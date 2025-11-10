@@ -502,9 +502,11 @@ export default function Home() {
       const data = await response.json();
 
       if (data.success && data.alreadyArchived) {
-        setUrlCheckResult(
-          `✓ This URL was already archived by ${data.archivedBy}${data.title ? ` - "${data.title}"` : ""}`,
-        );
+        let message = `✓ This URL was already archived by ${data.archivedBy}${data.title ? ` - "${data.title}"` : ""}`;
+        if (data.filemoonUrl) {
+          message += `. Watch at: https://filemoon.sx/e/${data.filemoonUrl}`;
+        }
+        setUrlCheckResult(message);
       } else if (data.success) {
         setUrlCheckResult("✓ This URL has not been archived yet");
       } else {

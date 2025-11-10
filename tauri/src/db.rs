@@ -185,7 +185,7 @@ impl Database {
         // Check if URL already exists for current user
         let rows = client
             .query(
-                "SELECT status, user_id FROM queue WHERE url = $1",
+                "SELECT status, user_id, filemoon_url, title FROM queue WHERE url = $1",
                 &[&item.url],
             )
             .await?;
@@ -193,21 +193,33 @@ impl Database {
         if !rows.is_empty() {
             let status: String = rows[0].get(0);
             let user_id: String = rows[0].get(1);
+            let filemoon_url: Option<String> = rows[0].get(2);
+            let title: Option<String> = rows[0].get(3);
             
             // Check if it's from another user and already archived
             let default_user = String::new();
             let current_user_id = item.user_id.as_ref().unwrap_or(&default_user);
             if &user_id != current_user_id && status == "uploaded" {
-                return Err(format!(
+                let mut error_msg = format!(
                     "URL \'{}\' has already been archived by another user.",
                     item.url
-                )
-                .into());
+                );
+                if let Some(url) = filemoon_url {
+                    error_msg.push_str(&format!(" Filemoon URL: https://filemoon.sx/e/{}", url));
+                }
+                if let Some(t) = title {
+                    error_msg.push_str(&format!(" Title: {}", t));
+                }
+                return Err(error_msg.into());
             }
             
             // If it's the current user or in active queue
             let error_message = if status == "uploaded" {
-                format!("URL \'{}\' has already been archived.", item.url)
+                let mut msg = format!("URL \'{}\' has already been archived.", item.url);
+                if let Some(url) = filemoon_url {
+                    msg.push_str(&format!(" Filemoon URL: https://filemoon.sx/e/{}", url));
+                }
+                msg
             } else {
                 format!(
                     "URL \'{}\' already exists in the active queue (status: {}).",

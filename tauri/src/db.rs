@@ -182,16 +182,30 @@ impl Database {
             .clone()
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        // Check if URL already exists
+        // Check if URL already exists for current user
         let rows = client
             .query(
-                "SELECT status FROM queue WHERE url = $1 LIMIT 1",
+                "SELECT status, user_id FROM queue WHERE url = $1",
                 &[&item.url],
             )
             .await?;
 
         if !rows.is_empty() {
             let status: String = rows[0].get(0);
+            let user_id: String = rows[0].get(1);
+            
+            // Check if it's from another user and already archived
+            let default_user = String::new();
+            let current_user_id = item.user_id.as_ref().unwrap_or(&default_user);
+            if &user_id != current_user_id && status == "uploaded" {
+                return Err(format!(
+                    "URL \'{}\' has already been archived by another user.",
+                    item.url
+                )
+                .into());
+            }
+            
+            // If it's the current user or in active queue
             let error_message = if status == "uploaded" {
                 format!("URL \'{}\' has already been archived.", item.url)
             } else {

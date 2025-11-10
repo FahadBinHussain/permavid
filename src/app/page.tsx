@@ -358,6 +358,10 @@ export default function Home() {
   const [cancellingItemId, setCancellingItemId] = useState<string | null>(null);
   const [retryingItemId, setRetryingItemId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  
+  // URL checker state
+  const [isCheckingUrl, setIsCheckingUrl] = useState(false);
+  const [urlCheckResult, setUrlCheckResult] = useState<string>("");
 
   // --- Settings State ---
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -464,6 +468,55 @@ export default function Home() {
       }
     };
   }, [fetchQueue, fetchSettings, showSettingsModal]);
+
+  const handleCheckUrl = async () => {
+    if (!url.trim()) {
+      setUrlCheckResult("Please enter a URL to check");
+      return;
+    }
+
+    setIsCheckingUrl(true);
+    setUrlCheckResult("");
+
+    try {
+      // Get current user ID from localStorage
+      let currentUserId = "local-user";
+      try {
+        const savedUser = localStorage.getItem("auth_user");
+        if (savedUser) {
+          const userData = JSON.parse(savedUser);
+          currentUserId = userData.id;
+        }
+      } catch (error) {
+        console.error("Error getting user ID:", error);
+      }
+
+      const response = await fetch("/api/archives/check", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ url: url.trim(), currentUserId }),
+      });
+
+      const data = await response.json();
+
+      if (data.success && data.alreadyArchived) {
+        setUrlCheckResult(
+          `✓ This URL was already archived by ${data.archivedBy}${data.title ? ` - "${data.title}"` : ""}`,
+        );
+      } else if (data.success) {
+        setUrlCheckResult("✓ This URL has not been archived yet");
+      } else {
+        setUrlCheckResult("Failed to check URL status");
+      }
+    } catch (error) {
+      console.error("Error checking URL:", error);
+      setUrlCheckResult("Error checking URL status");
+    } finally {
+      setIsCheckingUrl(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -1116,7 +1169,10 @@ export default function Home() {
               id="urlInput"
               type="url"
               value={url}
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                setUrlCheckResult(""); // Clear check result when URL changes
+              }}
               placeholder="https://www.youtube.com/watch?v=..."
               required
               className="flex-grow block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
@@ -1137,6 +1193,53 @@ export default function Home() {
                 </>
               )}
             </button>
+          </div>
+
+          {/* URL Checker Section */}
+          <div className="mt-4 flex items-start space-x-3">
+            <button
+              type="button"
+              onClick={handleCheckUrl}
+              disabled={isCheckingUrl || !url}
+              className="inline-flex items-center px-3 py-1.5 border border-gray-300 dark:border-gray-600 shadow-sm text-xs font-medium rounded-md text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isCheckingUrl ? (
+                <>
+                  <Cog6ToothIcon className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  Checking...
+                </>
+              ) : (
+                <>
+                  <svg
+                    className="h-3.5 w-3.5 mr-1.5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  Check if already archived
+                </>
+              )}
+            </button>
+            {urlCheckResult && (
+              <p
+                className={`text-xs flex-1 py-1.5 ${
+                  urlCheckResult.includes("already archived")
+                    ? "text-amber-600 dark:text-amber-400"
+                    : urlCheckResult.includes("not been archived")
+                      ? "text-green-600 dark:text-green-400"
+                      : "text-gray-600 dark:text-gray-400"
+                }`}
+              >
+                {urlCheckResult}
+              </p>
+            )}
           </div>
         </form>
         {/* Message/Error Area */}

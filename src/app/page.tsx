@@ -540,13 +540,34 @@ export default function Home() {
         // addToQueue returns a string ID on success
         const id = await tauriAddToQueue(newItem as QueueItem);
         setUrl("");
+        setUrlCheckResult(""); // Clear check result on success
         // Refresh the queue
         fetchQueue();
         // Show success toast
         toast.success("URL added to queue successfully");
       } catch (apiError: any) {
-        setError(apiError.message || "Failed to add URL to queue");
-        toast.error(apiError.message || "Failed to add URL to queue");
+        // Better error messages for archived URLs
+        const errorMsg = apiError.message || String(apiError);
+        
+        if (errorMsg.includes("already been archived by another user")) {
+          setError(
+            "⚠️ This URL has already been archived by another user. You can check it using the 'Check if already archived' button.",
+          );
+          toast.error("URL already archived by another user");
+        } else if (errorMsg.includes("has already been archived")) {
+          setError(
+            "⚠️ You have already archived this URL. Check your queue for uploaded items.",
+          );
+          toast.error("You already archived this URL");
+        } else if (errorMsg.includes("already exists in the active queue")) {
+          setError(
+            "⚠️ This URL is already in your active queue. Check the queue below.",
+          );
+          toast.error("URL already in queue");
+        } else {
+          setError(errorMsg || "Failed to add URL to queue");
+          toast.error(errorMsg || "Failed to add URL to queue");
+        }
       }
     } catch (error) {
       console.error("Error adding URL to queue:", error);

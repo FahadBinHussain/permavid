@@ -8,17 +8,12 @@ PermaVid is a local video archiving tool that helps you download, manage, and ar
 
 ## 🚀 Quick Start (Tauri App)
 
-1. Install dependencies:
-   ```bash
+1. Install dependencies
    pnpm install
-   ```
-2. **Set up Google Authentication** (required):
-   - Create a `.env.local` file with your Google OAuth credentials
-   - See [Authentication Setup](./docs/AUTH_SETUP.md) for detailed instructions
+2. set up prisma:
+   pnpm prisma generate
 3. Run the Tauri app in development mode:
-   ```bash
    pnpm run dev:tauri
-   ```
 
 ---
 

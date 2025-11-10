@@ -165,20 +165,36 @@ const QueueListItem: React.FC<QueueItemProps> = ({
         {item.thumbnail_url ? (
           <div className="flex-shrink-0">
             <img
-              className="h-16 w-28 rounded-md object-cover border border-gray-200" // Slightly larger, rounded, border
+              className="h-16 w-28 rounded-md object-cover border border-gray-200"
               src={item.thumbnail_url}
               alt="Video thumbnail"
               onError={(e) => {
-                e.currentTarget.style.display = "none";
-                // Optionally show a placeholder:
-                // e.currentTarget.parentElement?.insertAdjacentHTML('beforeend', '<div class="h-16 w-28 rounded-md bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-400 text-xs">No thumb</div>');
+                // Replace with placeholder if thumbnail fails to load
+                const parent = e.currentTarget.parentElement;
+                if (parent) {
+                  parent.innerHTML = `
+                    <div class="h-16 w-28 rounded-md bg-gradient-to-br from-gray-100 to-gray-200 border border-gray-300 flex flex-col items-center justify-center">
+                      <svg class="w-8 h-8 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M8 5v14l11-7z"/>
+                      </svg>
+                      <span class="text-[10px] text-gray-400 mt-0.5">No Preview</span>
+                    </div>
+                  `;
+                }
               }}
             />
           </div>
         ) : (
-          // Placeholder if no thumbnail
-          <div className="flex-shrink-0 h-16 w-28 rounded-md bg-gray-100 border border-gray-200 flex items-center justify-center text-gray-400 text-xs">
-            No thumb
+          // Placeholder if no thumbnail - with video play icon
+          <div className="flex-shrink-0 h-16 w-28 rounded-md bg-gradient-to-br from-gray-100 to-gray-200 border border-gray-300 flex flex-col items-center justify-center">
+            <svg
+              className="w-8 h-8 text-gray-400"
+              fill="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            <span className="text-[10px] text-gray-400 mt-0.5">No Preview</span>
           </div>
         )}
 

@@ -16,14 +16,8 @@ Before you can build and run the Tauri version of PermaVid, make sure you have t
 
 ## Development
 
-To run the application in development mode:
-
-```bash
-# From the project root
 npm run dev:tauri
-```
 
-This will start both the Next.js development server and the Tauri development window.
 
 ## Building for Production
 

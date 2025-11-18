@@ -1381,29 +1381,66 @@ async fn process_queue_background(app_handle: tauri::AppHandle) {
                                     );
                                     download_success = true;
                                 } else {
-                                    let stderr_output =
-                                        stderr_capture.lock().unwrap().trim().to_string();
-                                    let err_msg = format!(
-                                        "yt-dlp exited with code: {:?}. Stderr: {}",
-                                        status.code(),
-                                        if stderr_output.is_empty() {
-                                            "None"
+                                    // Check if the item was cancelled while downloading
+                                    let state_check: State<'_, AppState> = app_handle.state();
+                                    let current_item = state_check.db.get_item_by_id(&item_id).await;
+                                    
+                                    if let Ok(Some(item)) = current_item {
+                                        if item.status == "cancelled" {
+                                            println!("Item {} was cancelled by user, not marking as failed", item_id);
+                                            // Don't update to failed, keep it as cancelled
                                         } else {
-                                            &stderr_output
+                                            // Only mark as failed if not already cancelled
+                                            let stderr_output =
+                                                stderr_capture.lock().unwrap().trim().to_string();
+                                            let err_msg = format!(
+                                                "yt-dlp exited with code: {:?}. Stderr: {}",
+                                                status.code(),
+                                                if stderr_output.is_empty() {
+                                                    "None"
+                                                } else {
+                                                    &stderr_output
+                                                }
+                                            );
+                                            eprintln!("Error for item {}: {}", item_id, err_msg);
+                                            // Update DB status
+                                            let state_err: State<'_, AppState> = app_handle.state();
+                                            if let Err(e) = state_err
+                                                .db
+                                                .update_item_status(&item_id, "failed", Some(err_msg))
+                                                .await
+                                            {
+                                                eprintln!(
+                                                    "Error updating status after download failure: {}",
+                                                    e
+                                                );
+                                            }
                                         }
-                                    );
-                                    eprintln!("Error for item {}: {}", item_id, err_msg);
-                                    // Update DB status
-                                    let state_err: State<'_, AppState> = app_handle.state();
-                                    if let Err(e) = state_err
-                                        .db
-                                        .update_item_status(&item_id, "failed", Some(err_msg))
-                                        .await
-                                    {
-                                        eprintln!(
-                                            "Error updating status after download failure: {}",
-                                            e
+                                    } else {
+                                        // Couldn't check status, default to failed
+                                        let stderr_output =
+                                            stderr_capture.lock().unwrap().trim().to_string();
+                                        let err_msg = format!(
+                                            "yt-dlp exited with code: {:?}. Stderr: {}",
+                                            status.code(),
+                                            if stderr_output.is_empty() {
+                                                "None"
+                                            } else {
+                                                &stderr_output
+                                            }
                                         );
+                                        eprintln!("Error for item {}: {}", item_id, err_msg);
+                                        let state_err: State<'_, AppState> = app_handle.state();
+                                        if let Err(e) = state_err
+                                            .db
+                                            .update_item_status(&item_id, "failed", Some(err_msg))
+                                            .await
+                                        {
+                                            eprintln!(
+                                                "Error updating status after download failure: {}",
+                                                e
+                                            );
+                                        }
                                     }
                                 }
                             }
